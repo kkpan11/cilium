@@ -4,8 +4,9 @@
 #include "common.h"
 #include <bpf/ctx/unspec.h>
 #include <bpf/api.h>
-#include "lib/common.h"
 #include "pktgen.h"
+
+#define TEST_BPF_SOCK 1
 
 #define ENABLE_IPV4 1
 #undef ENABLE_HEALTH_CHECK
@@ -32,6 +33,7 @@ int my_get_netns_cookie(__maybe_unused const struct bpf_sock_addr *addr)
 #define get_netns_cookie(ctx) my_get_netns_cookie(ctx)
 
 #include "bpf_sock.c"
+#include "lib/common.h"
 
 #define SVC_KEY_VALUE(_port, _beslot, _beid, _scope) { \
 	.key = { \

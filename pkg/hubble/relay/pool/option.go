@@ -4,10 +4,7 @@
 package pool
 
 import (
-	"time"
-
 	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
 
 	"github.com/cilium/cilium/pkg/backoff"
 	peerTypes "github.com/cilium/cilium/pkg/hubble/peer/types"
@@ -15,31 +12,23 @@ import (
 	poolTypes "github.com/cilium/cilium/pkg/hubble/relay/pool/types"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 // defaultOptions is the reference point for default values.
 var defaultOptions = options{
 	peerServiceAddress: defaults.PeerTarget,
-	peerClientBuilder: peerTypes.LocalClientBuilder{
-		DialTimeout: defaults.DialTimeout,
-	},
-	clientConnBuilder: GRPCClientConnBuilder{
-		DialTimeout: defaults.DialTimeout,
-		Options: []grpc.DialOption{
-			grpc.WithInsecure(),
-			grpc.WithBlock(),
-			grpc.FailOnNonTempDialError(true),
-			grpc.WithReturnConnectionError(),
-		},
-	},
+	peerClientBuilder:  peerTypes.LocalClientBuilder{},
+	clientConnBuilder:  GRPCClientConnBuilder{},
 	backoff: &backoff.Exponential{
-		Min:    10 * time.Second,
-		Max:    90 * time.Minute,
+		Min:    time.Second,
+		Max:    time.Minute,
 		Factor: 2.0,
 	},
-	connCheckInterval: 2 * time.Minute,
-	retryTimeout:      defaults.RetryTimeout,
-	log:               logging.DefaultLogger.WithField(logfields.LogSubsys, "hubble-relay"),
+	connCheckInterval:  2 * time.Minute,
+	connStatusInterval: 5 * time.Second,
+	retryTimeout:       defaults.RetryTimeout,
+	log:                logging.DefaultLogger.WithField(logfields.LogSubsys, "hubble-relay"),
 }
 
 // Option customizes the configuration of the Manager.
@@ -52,6 +41,7 @@ type options struct {
 	clientConnBuilder  poolTypes.ClientConnBuilder
 	backoff            BackoffDuration
 	connCheckInterval  time.Duration
+	connStatusInterval time.Duration
 	retryTimeout       time.Duration
 	log                logrus.FieldLogger
 }
@@ -95,6 +85,15 @@ func WithBackoff(b BackoffDuration) Option {
 func WithConnCheckInterval(i time.Duration) Option {
 	return func(o *options) error {
 		o.connCheckInterval = i
+		return nil
+	}
+}
+
+// WithConnStatusInterval sets the time interval between peer connection status
+// is reported through Prometheus gauge metrics.
+func WithConnStatusInterval(i time.Duration) Option {
+	return func(o *options) error {
+		o.connStatusInterval = i
 		return nil
 	}
 }

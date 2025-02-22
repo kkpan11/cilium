@@ -17,64 +17,21 @@ import (
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "option")
 
-var IngressLBAnnotationsDefault = []string{"service.beta.kubernetes.io", "service.kubernetes.io", "cloud.google.com"}
-
 const (
 	// EndpointGCIntervalDefault is the default time for the CEP GC
 	EndpointGCIntervalDefault = 5 * time.Minute
-
-	// PrometheusServeAddr is the default server address for operator metrics
-	PrometheusServeAddr = ":9963"
-
-	// CESMaxCEPsInCESDefault is the maximum number of cilium endpoints allowed in a CES
-	CESMaxCEPsInCESDefault = 100
-
-	// CESSlicingModeDefault is default method for grouping CEP in a CES.
-	CESSlicingModeDefault = "cesSliceModeIdentity"
-
-	// CNPStatusCleanupQPSDefault is the default rate for the CNP NodeStatus updates GC.
-	CNPStatusCleanupQPSDefault = 10
-
-	// CNPStatusCleanupBurstDefault is the default maximum burst for the CNP NodeStatus updates GC.
-	CNPStatusCleanupBurstDefault = 20
 
 	// PprofAddressOperator is the default value for pprof in the operator
 	PprofAddressOperator = "localhost"
 
 	// PprofPortOperator is the default value for pprof in the operator
 	PprofPortOperator = 6061
+
+	// DefaultProxyIdleTimeoutSeconds is the default value for the proxy idle timeout
+	DefaultProxyIdleTimeoutSeconds = 60
 )
 
 const (
-	// BGPAnnounceLBIP announces service IPs of type LoadBalancer via BGP beta (deprecated)
-	BGPAnnounceLBIP = "bgp-announce-lb-ip"
-
-	// BGPConfigPath is the file path to the BGP configuration. It is
-	// compatible with MetalLB's configuration.
-	BGPConfigPath = "bgp-config-path"
-
-	// CNPNodeStatusGCInterval is the GC interval for nodes which have been
-	// removed from the cluster in CiliumNetworkPolicy and
-	// CiliumClusterwideNetworkPolicy Status.
-	CNPNodeStatusGCInterval = "cnp-node-status-gc-interval"
-
-	// CNPStatusUpdateInterval is the interval between status updates
-	// being sent to the K8s apiserver for a given CNP.
-	CNPStatusUpdateInterval = "cnp-status-update-interval"
-
-	// SkipCNPStatusStartupClean specifies if the cleanup of all the CNP
-	// NodeStatus updates at startup must be skipped.
-	SkipCNPStatusStartupClean = "skip-cnp-status-startup-clean"
-
-	// CNPStatusCleanupQPS is the rate at which the cleanup operation of the status
-	// nodes updates in CNPs is carried out. It is expressed as queries per second,
-	// and for each query a single CNP status update will be deleted.
-	CNPStatusCleanupQPS = "cnp-status-cleanup-qps"
-
-	// CNPStatusCleanupBurst is the maximum burst of queries allowed for the cleanup
-	// operation of the status nodes updates in CNPs.
-	CNPStatusCleanupBurst = "cnp-status-cleanup-burst"
-
 	// EnableMetrics enables prometheus metrics.
 	EnableMetrics = "enable-metrics"
 
@@ -86,10 +43,6 @@ const (
 
 	// NodesGCInterval is the duration for which the cilium nodes are GC.
 	NodesGCInterval = "nodes-gc-interval"
-
-	// OperatorPrometheusServeAddr IP:Port on which to serve prometheus
-	// metrics (pass ":Port" to bind on all interfaces, "" is off).
-	OperatorPrometheusServeAddr = "operator-prometheus-serve-addr"
 
 	// SyncK8sServices synchronizes k8s services into the kvstore
 	SyncK8sServices = "synchronize-k8s-services"
@@ -114,8 +67,12 @@ const (
 	// IPAMSubnetsTags are optional tags used to filter subnets, and interfaces within those subnets
 	IPAMSubnetsTags = "subnet-tags-filter"
 
-	// IPAMInstanceTagFilter are optional tags used to filter instances for ENI discovery ; only used with AWS IPAM mode for now
+	// IPAMInstanceTags are optional tags used to filter instances for ENI discovery.
+	// Only used with AWS and Alibabacloud IPAM mode for now
 	IPAMInstanceTags = "instance-tags-filter"
+
+	// IPAMAutoCreateCiliumPodIPPools contains pre-defined IP pools to be auto-created on startup.
+	IPAMAutoCreateCiliumPodIPPools = "auto-create-cilium-pod-ip-pools"
 
 	// ClusterPoolIPv4CIDR is the cluster's IPv4 CIDR to allocate
 	// individual PodCIDR ranges from when using the ClusterPool ipam mode.
@@ -219,49 +176,20 @@ const (
 	// the number of API calls to AlibabaCloud ECS service.
 	AlibabaCloudReleaseExcessIPs = "alibaba-cloud-release-excess-ips"
 
-	// CiliumEndpointSlice options
-
-	// CESMaxCEPsInCES is the maximum number of cilium endpoints allowed in single
-	// a CiliumEndpointSlice resource.
-	CESMaxCEPsInCES = "ces-max-ciliumendpoints-per-ces"
-
-	// CESSlicingMode instructs how CEPs are grouped in a CES.
-	CESSlicingMode = "ces-slice-mode"
-
-	// LoadBalancerL7 enables loadbalancer capabilities for services via envoy proxy
-	LoadBalancerL7 = "loadbalancer-l7"
-
-	// LoadBalancerL7Ports is a list of service ports that will be automatically redirected to backend.
-	LoadBalancerL7Ports = "loadbalancer-l7-ports"
-
-	// LoadBalancerL7Algorithm is a default LB algorithm for services that do not specify related annotation
-	LoadBalancerL7Algorithm = "loadbalancer-l7-algorithm"
-
-	// EnableIngressController enables cilium ingress controller
-	// This must be enabled along with enable-envoy-config in cilium agent.
-	EnableIngressController = "enable-ingress-controller"
-
-	// EnforceIngressHttps enforces https for host having matching TLS host in Ingress.
-	// Incoming traffic to http listener will return 308 http error code with respective location in header.
-	EnforceIngressHttps = "enforce-ingress-https"
-
-	// EnableIngressSecretsSync enables fan-in TLS secrets from multiple namespaces to singular namespace (specified
-	// by ingress-secrets-namespace flag
-	EnableIngressSecretsSync = "enable-ingress-secrets-sync"
-
-	// EnableGatewayAPISecretsSync enables fan-in TLS secrets from multiple namespaces to singular namespace (specified
-	// by gateway-api-secrets-namespace flag
-	EnableGatewayAPISecretsSync = "enable-gateway-api-secrets-sync"
-
-	// IngressSecretsNamespace is the namespace having tls secrets used by Ingress and CEC.
-	IngressSecretsNamespace = "ingress-secrets-namespace"
-
-	// GatewayAPISecretsNamespace is the namespace having tls secrets used by GatewayAPI and CEC.
-	GatewayAPISecretsNamespace = "gateway-api-secrets-namespace"
+	// ProxyIdleTimeoutSeconds is the idle timeout for proxy connections to upstream clusters
+	ProxyIdleTimeoutSeconds = "proxy-idle-timeout-seconds"
 
 	// EnableGatewayAPI enables support of Gateway API
 	// This must be enabled along with enable-envoy-config in cilium agent.
 	EnableGatewayAPI = "enable-gateway-api"
+
+	// KubeProxyReplacement is equivalent to the cilium-agent option, and
+	// is used to provide hints for misconfiguration.
+	KubeProxyReplacement = "kube-proxy-replacement"
+
+	// EnableNodePort is equivalent to the cilium-agent option, and
+	// is used to provide hints for misconfiguration.
+	EnableNodePort = "enable-node-port"
 
 	// CiliumK8sNamespace is the namespace where Cilium pods are running.
 	CiliumK8sNamespace = "cilium-pod-namespace"
@@ -269,6 +197,10 @@ const (
 	// CiliumPodLabels specifies the pod labels that Cilium pods is running
 	// with.
 	CiliumPodLabels = "cilium-pod-labels"
+
+	// TaintSyncWorkers is the number of workers used to synchronize
+	// taints and conditions in Kubernetes nodes.
+	TaintSyncWorkers = "taint-sync-workers"
 
 	// RemoveCiliumNodeTaints is the flag to define if the Cilium node taint
 	// should be removed in Kubernetes nodes.
@@ -282,17 +214,6 @@ const (
 	// nodes.
 	SetCiliumIsUpCondition = "set-cilium-is-up-condition"
 
-	// IngressLBAnnotationPrefixes are the annotations which are needed to propagate
-	// from Ingress to the Load Balancer
-	IngressLBAnnotationPrefixes = "ingress-lb-annotation-prefixes"
-
-	// IngressSharedLBServiceName is the name of shared LB service name for Ingress.
-	IngressSharedLBServiceName = "ingress-shared-lb-service-name"
-
-	// IngressDefaultLoadbalancerMode is the default loadbalancer mode for Ingress.
-	// Applicable values: dedicated, shared
-	IngressDefaultLoadbalancerMode = "ingress-default-lb-mode"
-
 	// PodRestartSelector specify the labels contained in the pod that needs to be restarted before the node can be de-stained
 	// default values: k8s-app=kube-dns
 	PodRestartSelector = "pod-restart-selector"
@@ -300,30 +221,8 @@ const (
 
 // OperatorConfig is the configuration used by the operator.
 type OperatorConfig struct {
-	// CNPNodeStatusGCInterval is the GC interval for nodes which have been
-	// removed from the cluster in CiliumNetworkPolicy and
-	// CiliumClusterwideNetworkPolicy Status.
-	CNPNodeStatusGCInterval time.Duration
-
-	// CNPStatusUpdateInterval is the interval between status updates
-	// being sent to the K8s apiserver for a given CNP.
-	CNPStatusUpdateInterval time.Duration
-
 	// NodesGCInterval is the GC interval for CiliumNodes
 	NodesGCInterval time.Duration
-
-	// SkipCNPStatusStartupClean disables the cleanup of all the CNP
-	// NodeStatus updates at startup.
-	SkipCNPStatusStartupClean bool
-
-	// CNPStatusCleanupQPS is the rate at which the cleanup operation of the status
-	// nodes updates in CNPs is carried out. It is expressed as queries per second,
-	// and for each query a single CNP status update will be deleted.
-	CNPStatusCleanupQPS float64
-
-	// CNPStatusCleanupBurst is the maximum burst of queries allowed for the cleanup
-	// operation of the status nodes updates in CNPs.
-	CNPStatusCleanupBurst int
 
 	// EnableMetrics enables prometheus metrics.
 	EnableMetrics bool
@@ -333,8 +232,6 @@ type OperatorConfig struct {
 	// Note that only one node per cluster should run this, and most iterations
 	// will simply return.
 	EndpointGCInterval time.Duration
-
-	OperatorPrometheusServeAddr string
 
 	// SyncK8sServices synchronizes k8s services into the kvstore
 	SyncK8sServices bool
@@ -357,13 +254,6 @@ type OperatorConfig struct {
 	// retries of the actions in operator HA deployment.
 	LeaderElectionRetryPeriod time.Duration
 
-	// BGPAnnounceLBIP announces service IPs of type LoadBalancer via BGP beta (deprecated)
-	BGPAnnounceLBIP bool
-
-	// BGPConfigPath is the file path to the BGP configuration. It is
-	// compatible with MetalLB's configuration.
-	BGPConfigPath string
-
 	// IPAM options
 
 	// IPAMAPIBurst is the burst value allowed when accessing external IPAM APIs
@@ -378,7 +268,8 @@ type OperatorConfig struct {
 	// IPAMSubnetsTags are optional tags used to filter subnets, and interfaces within those subnets
 	IPAMSubnetsTags map[string]string
 
-	// IPAMUInstanceTags are optional tags used to filter AWS EC2 instances, and interfaces (ENI) attached to them
+	// IPAMInstanceTags are optional tags used to filter instances for ENI discovery.
+	// Only used with AWS and Alibabacloud IPAM mode for now
 	IPAMInstanceTags map[string]string
 
 	// IPAM Operator options
@@ -398,6 +289,14 @@ type OperatorConfig struct {
 	// NodeCIDRMaskSizeIPv6 is the IPv6 podCIDR mask size that will be used
 	// per node.
 	NodeCIDRMaskSizeIPv6 int
+
+	// IPAMAutoCreateCiliumPodIPPools contains pre-defined IP pools to be auto-created on startup.
+	IPAMAutoCreateCiliumPodIPPools map[string]string
+
+	// KubeProxyReplacement or NodePort are required to implement cluster
+	// Ingress (or equivalent Gateway API functionality)
+	KubeProxyReplacement string
+	EnableNodePort       bool
 
 	// AWS options
 
@@ -472,45 +371,11 @@ type OperatorConfig struct {
 	// the number of API calls to AlibabaCloud ECS service.
 	AlibabaCloudReleaseExcessIPs bool
 
-	// CiliumEndpointSlice options
-
-	// CESMaxCEPsInCES is the maximum number of CiliumEndpoints allowed in single
-	// a CiliumEndpointSlice resource.
-	// The default value of maximum CiliumEndpoints allowed in a CiliumEndpointSlice resource is 100.
-	CESMaxCEPsInCES int
-
-	// CESSlicingMode instructs how CEPs are grouped in a CES.
-	CESSlicingMode string
-
-	// LoadBalancerL7 enables loadbalancer capabilities for services.
-	LoadBalancerL7 string
-
-	// EnvoyLoadBalancerPorts is a list of service ports that will be automatically redirected to Envoy
-	LoadBalancerL7Ports []string
-
-	// LoadBalancerL7Algorithm is a default LB algorithm for services that do not specify related annotation
-	LoadBalancerL7Algorithm string
-
-	// EnableIngressController enables cilium ingress controller
-	EnableIngressController bool
-
 	// EnableGatewayAPI enables support of Gateway API
 	EnableGatewayAPI bool
 
-	// EnforceIngressHTTPS enforces https if required
-	EnforceIngressHTTPS bool
-
-	// EnableIngressSecretsSync enables background TLS secret sync for Ingress
-	EnableIngressSecretsSync bool
-
-	// EnableGatewayAPISecretsSync enables background TLS secret sync for Gateway API
-	EnableGatewayAPISecretsSync bool
-
-	// IngressSecretsNamespace is the namespace having tls secrets used by CEC for Ingress.
-	IngressSecretsNamespace string
-
-	// GatewayAPISecretsNamespace is the namespace having tls secrets used by CEC for Gateway API.
-	GatewayAPISecretsNamespace string
+	// ProxyIdleTimeoutSeconds is the idle timeout for the proxy to upstream cluster
+	ProxyIdleTimeoutSeconds int
 
 	// CiliumK8sNamespace is the namespace where Cilium pods are running.
 	CiliumK8sNamespace string
@@ -518,6 +383,10 @@ type OperatorConfig struct {
 	// CiliumPodLabels specifies the pod labels that Cilium pods is running
 	// with.
 	CiliumPodLabels string
+
+	// TaintSyncWorkers is the number of workers used to synchronize
+	// taints and conditions in Kubernetes nodes.
+	TaintSyncWorkers int
 
 	// RemoveCiliumNodeTaints is the flag to define if the Cilium node taint
 	// should be removed in Kubernetes nodes.
@@ -531,32 +400,15 @@ type OperatorConfig struct {
 	// nodes.
 	SetCiliumIsUpCondition bool
 
-	// IngressLBAnnotationPrefixes IngressLBAnnotations are the annotation prefixes,
-	// which are used to filter annotations to propagate from Ingress to the Load Balancer
-	IngressLBAnnotationPrefixes []string
-
-	// IngressSharedLBServiceName is the name of shared LB service name for Ingress.
-	IngressSharedLBServiceName string
-
-	// IngressDefaultLoadbalancerMode is the default loadbalancer mode for Ingress.
-	// Applicable values: dedicated, shared
-	IngressDefaultLoadbalancerMode string
-
 	// PodRestartSelector specify the labels contained in the pod that needs to be restarted before the node can be de-stained
 	PodRestartSelector string
 }
 
 // Populate sets all options with the values from viper.
 func (c *OperatorConfig) Populate(vp *viper.Viper) {
-	c.CNPNodeStatusGCInterval = vp.GetDuration(CNPNodeStatusGCInterval)
-	c.CNPStatusUpdateInterval = vp.GetDuration(CNPStatusUpdateInterval)
 	c.NodesGCInterval = vp.GetDuration(NodesGCInterval)
-	c.SkipCNPStatusStartupClean = vp.GetBool(SkipCNPStatusStartupClean)
-	c.CNPStatusCleanupQPS = vp.GetFloat64(CNPStatusCleanupQPS)
-	c.CNPStatusCleanupBurst = vp.GetInt(CNPStatusCleanupBurst)
 	c.EnableMetrics = vp.GetBool(EnableMetrics)
 	c.EndpointGCInterval = vp.GetDuration(EndpointGCInterval)
-	c.OperatorPrometheusServeAddr = vp.GetString(OperatorPrometheusServeAddr)
 	c.SyncK8sServices = vp.GetBool(SyncK8sServices)
 	c.SyncK8sNodes = vp.GetBool(SyncK8sNodes)
 	c.UnmanagedPodWatcherInterval = vp.GetInt(UnmanagedPodWatcherInterval)
@@ -567,25 +419,16 @@ func (c *OperatorConfig) Populate(vp *viper.Viper) {
 	c.LeaderElectionLeaseDuration = vp.GetDuration(LeaderElectionLeaseDuration)
 	c.LeaderElectionRenewDeadline = vp.GetDuration(LeaderElectionRenewDeadline)
 	c.LeaderElectionRetryPeriod = vp.GetDuration(LeaderElectionRetryPeriod)
-	c.BGPAnnounceLBIP = vp.GetBool(BGPAnnounceLBIP)
-	c.BGPConfigPath = vp.GetString(BGPConfigPath)
-	c.LoadBalancerL7 = vp.GetString(LoadBalancerL7)
-	c.LoadBalancerL7Ports = vp.GetStringSlice(LoadBalancerL7Ports)
-	c.LoadBalancerL7Algorithm = vp.GetString(LoadBalancerL7Algorithm)
-	c.EnableIngressController = vp.GetBool(EnableIngressController)
 	c.EnableGatewayAPI = vp.GetBool(EnableGatewayAPI)
-	c.EnforceIngressHTTPS = vp.GetBool(EnforceIngressHttps)
-	c.IngressSecretsNamespace = vp.GetString(IngressSecretsNamespace)
-	c.GatewayAPISecretsNamespace = vp.GetString(GatewayAPISecretsNamespace)
-	c.EnableIngressSecretsSync = vp.GetBool(EnableIngressSecretsSync)
-	c.EnableGatewayAPISecretsSync = vp.GetBool(EnableGatewayAPISecretsSync)
+	c.ProxyIdleTimeoutSeconds = vp.GetInt(ProxyIdleTimeoutSeconds)
+	if c.ProxyIdleTimeoutSeconds == 0 {
+		c.ProxyIdleTimeoutSeconds = DefaultProxyIdleTimeoutSeconds
+	}
 	c.CiliumPodLabels = vp.GetString(CiliumPodLabels)
+	c.TaintSyncWorkers = vp.GetInt(TaintSyncWorkers)
 	c.RemoveCiliumNodeTaints = vp.GetBool(RemoveCiliumNodeTaints)
 	c.SetCiliumNodeTaints = vp.GetBool(SetCiliumNodeTaints)
 	c.SetCiliumIsUpCondition = vp.GetBool(SetCiliumIsUpCondition)
-	c.IngressLBAnnotationPrefixes = vp.GetStringSlice(IngressLBAnnotationPrefixes)
-	c.IngressSharedLBServiceName = vp.GetString(IngressSharedLBServiceName)
-	c.IngressDefaultLoadbalancerMode = vp.GetString(IngressDefaultLoadbalancerMode)
 	c.PodRestartSelector = vp.GetString(PodRestartSelector)
 
 	c.CiliumK8sNamespace = vp.GetString(CiliumK8sNamespace)
@@ -598,17 +441,15 @@ func (c *OperatorConfig) Populate(vp *viper.Viper) {
 		}
 	}
 
-	if c.BGPAnnounceLBIP {
-		c.SyncK8sServices = true
-		log.Infof("Auto-set %q to `true` because BGP support requires synchronizing services.",
-			SyncK8sServices)
-	}
-
 	// IPAM options
 
 	c.IPAMAPIQPSLimit = vp.GetFloat64(IPAMAPIQPSLimit)
 	c.IPAMAPIBurst = vp.GetInt(IPAMAPIBurst)
 	c.ParallelAllocWorkers = vp.GetInt64(ParallelAllocWorkers)
+
+	// Gateways and Ingress
+	c.KubeProxyReplacement = vp.GetString(KubeProxyReplacement)
+	c.EnableNodePort = vp.GetBool(EnableNodePort)
 
 	// AWS options
 
@@ -631,10 +472,6 @@ func (c *OperatorConfig) Populate(vp *viper.Viper) {
 
 	c.AlibabaCloudVPCID = vp.GetString(AlibabaCloudVPCID)
 	c.AlibabaCloudReleaseExcessIPs = vp.GetBool(AlibabaCloudReleaseExcessIPs)
-
-	// CiliumEndpointSlice options
-	c.CESMaxCEPsInCES = vp.GetInt(CESMaxCEPsInCES)
-	c.CESSlicingMode = vp.GetString(CESSlicingMode)
 
 	// Option maps and slices
 
@@ -671,14 +508,21 @@ func (c *OperatorConfig) Populate(vp *viper.Viper) {
 	} else {
 		c.ENIGarbageCollectionTags = m
 	}
+
+	if m, err := command.GetStringMapStringE(vp, IPAMAutoCreateCiliumPodIPPools); err != nil {
+		log.Fatalf("unable to parse %s: %s", IPAMAutoCreateCiliumPodIPPools, err)
+	} else {
+		c.IPAMAutoCreateCiliumPodIPPools = m
+	}
 }
 
 // Config represents the operator configuration.
 var Config = &OperatorConfig{
-	IPAMSubnetsIDs:           make([]string, 0),
-	IPAMSubnetsTags:          make(map[string]string),
-	IPAMInstanceTags:         make(map[string]string),
-	AWSInstanceLimitMapping:  make(map[string]string),
-	ENITags:                  make(map[string]string),
-	ENIGarbageCollectionTags: make(map[string]string),
+	IPAMSubnetsIDs:                 make([]string, 0),
+	IPAMSubnetsTags:                make(map[string]string),
+	IPAMInstanceTags:               make(map[string]string),
+	IPAMAutoCreateCiliumPodIPPools: make(map[string]string),
+	AWSInstanceLimitMapping:        make(map[string]string),
+	ENITags:                        make(map[string]string),
+	ENIGarbageCollectionTags:       make(map[string]string),
 }

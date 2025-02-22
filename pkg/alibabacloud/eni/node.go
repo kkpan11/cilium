@@ -5,6 +5,7 @@ package eni
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sirupsen/logrus"
@@ -18,7 +19,6 @@ import (
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
-	"github.com/cilium/cilium/pkg/math"
 )
 
 // The following error constants represent the error conditions for
@@ -87,8 +87,6 @@ func (n *Node) PopulateStatusFields(resource *v2.CiliumNode) {
 			}
 			return nil
 		})
-
-	return
 }
 
 // CreateInterface creates an additional interface with the instance and
@@ -98,7 +96,7 @@ func (n *Node) PopulateStatusFields(resource *v2.CiliumNode) {
 func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationAction, scopedLog *logrus.Entry) (int, string, error) {
 	l, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return 0, unableToDetermineLimits, fmt.Errorf(errUnableToDetermineLimits)
+		return 0, unableToDetermineLimits, errors.New(errUnableToDetermineLimits)
 	}
 
 	n.mutex.RLock()
@@ -106,8 +104,8 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	n.mutex.RUnlock()
 
 	// Must allocate secondary ENI IPs as needed, up to ENI instance limit
-	toAllocate := math.IntMin(allocation.MaxIPsToAllocate, l.IPv4)
-	toAllocate = math.IntMin(maxENIIPCreate, toAllocate) // in first alloc no more than 10
+	toAllocate := min(allocation.IPv4.MaxIPsToAllocate, l.IPv4)
+	toAllocate = min(maxENIIPCreate, toAllocate) // in first alloc no more than 10
 	// Validate whether request has already been fulfilled in the meantime
 	if toAllocate == 0 {
 		return 0, "", nil
@@ -130,7 +128,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	if err != nil {
 		return 0,
 			unableToGetSecurityGroups,
-			fmt.Errorf("%s %s", errUnableToGetSecurityGroups, err)
+			fmt.Errorf("%s: %w", errUnableToGetSecurityGroups, err)
 	}
 
 	scopedLog = scopedLog.WithFields(logrus.Fields{
@@ -151,7 +149,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 	eniID, eni, err := n.manager.api.CreateNetworkInterface(ctx, toAllocate-1, bestSubnet.ID, securityGroupIDs,
 		utils.FillTagWithENIIndex(map[string]string{}, index))
 	if err != nil {
-		return 0, unableToCreateENI, fmt.Errorf("%s %s", errUnableToCreateENI, err)
+		return 0, unableToCreateENI, fmt.Errorf("%s: %w", errUnableToCreateENI, err)
 	}
 
 	scopedLog = scopedLog.WithField(fieldENIID, eniID)
@@ -167,7 +165,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		if err2 != nil {
 			scopedLog.Errorf("Failed to release ENI after failure to attach, %s", err2.Error())
 		}
-		return 0, unableToAttachENI, fmt.Errorf("%s %s", errUnableToAttachENI, err)
+		return 0, unableToAttachENI, fmt.Errorf("%s: %w", errUnableToAttachENI, err)
 	}
 	_, err = n.manager.api.WaitENIAttached(ctx, eniID)
 	if err != nil {
@@ -175,7 +173,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 		if err2 != nil {
 			scopedLog.Errorf("Failed to release ENI after failure to attach, %s", err2.Error())
 		}
-		return 0, unableToAttachENI, fmt.Errorf("%s %s", errUnableToAttachENI, err)
+		return 0, unableToAttachENI, fmt.Errorf("%s: %w", errUnableToAttachENI, err)
 	}
 
 	n.enis[eniID] = *eni
@@ -191,7 +189,7 @@ func (n *Node) CreateInterface(ctx context.Context, allocation *ipam.AllocationA
 func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Entry) (available ipamTypes.AllocationMap, stats stats.InterfaceStats, err error) {
 	limits, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, stats, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, stats, ipam.LimitsNotFound{}
 	}
 
 	// During preparation of IP allocations, the primary NIC is not considered
@@ -226,7 +224,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 			}
 			stats.NodeCapacity -= primaryAllocated
 
-			availableOnENI := math.IntMax(limits.IPv4-len(e.PrivateIPSets), 0)
+			availableOnENI := max(limits.IPv4-len(e.PrivateIPSets), 0)
 			if availableOnENI > 0 {
 				stats.RemainingAvailableInterfaceCount++
 			}
@@ -241,7 +239,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	// An ECS instance has at least one ENI attached, no ENI found implies instance not found.
 	if enis == 0 {
 		scopedLog.Warning("Instance not found! Please delete corresponding ciliumnode if instance has already been deleted.")
-		return nil, stats, fmt.Errorf("unable to retrieve ENIs")
+		return nil, stats, errors.New("unable to retrieve ENIs")
 	}
 
 	stats.RemainingAvailableInterfaceCount += limits.Adapters - len(n.enis)
@@ -253,7 +251,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (*ipam.AllocationAction, error) {
 	l, limitsAvailable := n.getLimits()
 	if !limitsAvailable {
-		return nil, fmt.Errorf(errUnableToDetermineLimits)
+		return nil, errors.New(errUnableToDetermineLimits)
 	}
 	a := &ipam.AllocationAction{}
 
@@ -271,11 +269,11 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (*ipam.AllocationAct
 		}).Debug("Considering ENI for allocation")
 
 		// limit
-		availableOnENI := math.IntMax(l.IPv4-len(e.PrivateIPSets), 0)
+		availableOnENI := max(l.IPv4-len(e.PrivateIPSets), 0)
 		if availableOnENI <= 0 {
 			continue
 		} else {
-			a.InterfaceCandidates++
+			a.IPv4.InterfaceCandidates++
 		}
 
 		scopedLog.WithFields(logrus.Fields{
@@ -292,7 +290,7 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (*ipam.AllocationAct
 
 				a.InterfaceID = key
 				a.PoolID = ipamTypes.PoolID(subnet.ID)
-				a.AvailableForAllocation = math.IntMin(subnet.AvailableAddresses, availableOnENI)
+				a.IPv4.AvailableForAllocation = min(subnet.AvailableAddresses, availableOnENI)
 			}
 		}
 	}
@@ -302,8 +300,13 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (*ipam.AllocationAct
 
 // AllocateIPs performs the ENI allocation operation
 func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error {
-	_, err := n.manager.api.AssignPrivateIPAddresses(ctx, a.InterfaceID, a.AvailableForAllocation)
+	_, err := n.manager.api.AssignPrivateIPAddresses(ctx, a.InterfaceID, a.IPv4.AvailableForAllocation)
 	return err
+}
+
+func (n *Node) AllocateStaticIP(ctx context.Context, staticIPTags ipamTypes.Tags) (string, error) {
+	// TODO, see https://github.com/cilium/cilium/issues/34094
+	return "", fmt.Errorf("not implemented")
 }
 
 // PrepareIPRelease prepares the release of ENI IPs.
@@ -348,7 +351,7 @@ func (n *Node) PrepareIPRelease(excessIPs int, scopedLog *logrus.Entry) *ipam.Re
 			"excessIPs":      excessIPs,
 			"freeOnENICount": freeOnENICount,
 		}).Debug("ENI has unused IPs that can be released")
-		maxReleaseOnENI := math.IntMin(freeOnENICount, excessIPs)
+		maxReleaseOnENI := min(freeOnENICount, excessIPs)
 
 		r.InterfaceID = key
 		r.PoolID = ipamTypes.PoolID(e.VPC.VPCID)
@@ -456,7 +459,7 @@ func (n *Node) getSecurityGroupIDs(ctx context.Context, eniSpec eniTypes.Spec) (
 		})
 
 	if len(securityGroups) <= 0 {
-		return nil, fmt.Errorf("failed to get security group ids")
+		return nil, errors.New("failed to get security group ids")
 	}
 
 	return securityGroups, nil

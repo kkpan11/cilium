@@ -11,10 +11,12 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"go4.org/netipx"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
 	"github.com/cilium/cilium/pkg/datapath/linux/route"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	iputil "github.com/cilium/cilium/pkg/ip"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/logging"
@@ -38,7 +40,9 @@ var (
 // ip: The endpoint IP address to direct traffic out / from interface.
 // info: The interface routing info used to create rules and routes.
 // mtu: The interface MTU.
-func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
+// compat: Whether to use the compat egress priority or not.
+// host: Whether the IP is a host IP and needs to be routed via the 'local' table
+func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool, host bool) error {
 	if ip.To4() == nil {
 		log.WithFields(logrus.Fields{
 			"endpointIP": ip,
@@ -48,7 +52,7 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 
 	ifindex, err := retrieveIfIndexFromMAC(info.MasterIfMAC, mtu)
 	if err != nil {
-		return fmt.Errorf("unable to find ifindex for interface MAC: %s", err)
+		return fmt.Errorf("unable to find ifindex for interface MAC: %w", err)
 	}
 
 	ipWithMask := net.IPNet{
@@ -56,14 +60,20 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 		Mask: net.CIDRMask(32, 32),
 	}
 
-	// On ingress, route all traffic to the endpoint IP via the main routing
-	// table. Egress rules are created in a per-ENI routing table.
-	if err := route.ReplaceRule(route.Rule{
-		Priority: linux_defaults.RulePriorityIngress,
-		To:       &ipWithMask,
-		Table:    route.MainTable,
-	}); err != nil {
-		return fmt.Errorf("unable to install ip rule: %s", err)
+	// Ingress rule. This rule is not installed for the cilium_host IP, because
+	// the cilium_host IP is a local IP and therefore must be routed via the
+	// 'local' table instead of 'main'.
+	if !host {
+		// On ingress, route all traffic to the endpoint IP via the main routing
+		// table. Egress rules are created in a per-ENI routing table.
+		if err := route.ReplaceRule(route.Rule{
+			Priority: linux_defaults.RulePriorityIngress,
+			To:       &ipWithMask,
+			Table:    route.MainTable,
+			Protocol: linux_defaults.RTProto,
+		}); err != nil {
+			return fmt.Errorf("unable to install ip rule: %w", err)
+		}
 	}
 
 	var egressPriority, tableID int
@@ -79,14 +89,17 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 	if info.Masquerade && info.IpamMode == ipamOption.IPAMENI {
 		// Lookup a VPC specific table for all traffic from an endpoint to the
 		// CIDR configured for the VPC on which the endpoint has the IP on.
+		// ReplaceRule function doesn't handle all zeros cidr and return `file exists` error,
+		// so we need to normalize the rule to cidr here and in Delete
 		for _, cidr := range info.IPv4CIDRs {
 			if err := route.ReplaceRule(route.Rule{
 				Priority: egressPriority,
 				From:     &ipWithMask,
-				To:       &cidr,
+				To:       normalizeRuleToCIDR(&cidr),
 				Table:    tableID,
+				Protocol: linux_defaults.RTProto,
 			}); err != nil {
-				return fmt.Errorf("unable to install ip rule: %s", err)
+				return fmt.Errorf("unable to install ip rule: %w", err)
 			}
 		}
 	} else {
@@ -95,8 +108,9 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 			Priority: egressPriority,
 			From:     &ipWithMask,
 			Table:    tableID,
+			Protocol: linux_defaults.RTProto,
 		}); err != nil {
-			return fmt.Errorf("unable to install ip rule: %s", err)
+			return fmt.Errorf("unable to install ip rule: %w", err)
 		}
 	}
 
@@ -109,17 +123,19 @@ func (info *RoutingInfo) Configure(ip net.IP, mtu int, compat bool) error {
 		Dst:       &net.IPNet{IP: info.IPv4Gateway, Mask: net.CIDRMask(32, 32)},
 		Scope:     netlink.SCOPE_LINK,
 		Table:     tableID,
+		Protocol:  linux_defaults.RTProto,
 	}); err != nil {
-		return fmt.Errorf("unable to add L2 nexthop route: %s", err)
+		return fmt.Errorf("unable to add L2 nexthop route: %w", err)
 	}
 
 	// Default route to the VPC or subnet gateway
 	if err := netlink.RouteReplace(&netlink.Route{
-		Dst:   &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
-		Table: tableID,
-		Gw:    info.IPv4Gateway,
+		Dst:      &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
+		Table:    tableID,
+		Gw:       info.IPv4Gateway,
+		Protocol: linux_defaults.RTProto,
 	}); err != nil {
-		return fmt.Errorf("unable to add L2 nexthop route: %s", err)
+		return fmt.Errorf("unable to add L2 nexthop route: %w", err)
 	}
 
 	return nil
@@ -153,7 +169,7 @@ func Delete(ip netip.Addr, compat bool) error {
 		return errors.New("IP not compatible")
 	}
 
-	ipWithMask := iputil.AddrToIPNet(ip)
+	ipWithMask := netipx.AddrIPNet(ip)
 
 	scopedLog := log.WithFields(logrus.Fields{
 		"ip": ipWithMask.String(),
@@ -166,7 +182,7 @@ func Delete(ip netip.Addr, compat bool) error {
 		Table:    route.MainTable,
 	}
 	if err := deleteRule(ingress); err != nil {
-		return fmt.Errorf("unable to delete ingress rule from main table with ip %s: %v", ipWithMask.String(), err)
+		return fmt.Errorf("unable to delete ingress rule from main table with ip %s: %w", ipWithMask.String(), err)
 	}
 
 	scopedLog.WithField("rule", ingress).Debug("Deleted ingress rule")
@@ -193,7 +209,7 @@ func Delete(ip netip.Addr, compat bool) error {
 			egress := route.Rule{
 				Priority: priority,
 				From:     ipWithMask,
-				To:       cidr,
+				To:       normalizeRuleToCIDR(cidr),
 			}
 			if err := deleteRule(egress); err != nil {
 				return fmt.Errorf("unable to delete egress rule with ip %s: %w", ipWithMask.String(), err)
@@ -219,53 +235,16 @@ func Delete(ip netip.Addr, compat bool) error {
 		// In CRD-based IPAM, when an IP is unassigned from the CiliumNode, we delete this route
 		// to avoid blackholing traffic to this IP if it gets reassigned to another node
 		if err := netlink.RouteReplace(&netlink.Route{
-			Dst:   ipWithMask,
-			Table: route.MainTable,
-			Type:  unix.RTN_UNREACHABLE,
+			Dst:      ipWithMask,
+			Table:    route.MainTable,
+			Type:     unix.RTN_UNREACHABLE,
+			Protocol: linux_defaults.RTProto,
 		}); err != nil {
 			return fmt.Errorf("unable to add unreachable route for ip %s: %w", ipWithMask.String(), err)
 		}
 	}
 
 	return nil
-}
-
-// SetupRules installs routing rules based on the passed attributes. It accounts
-// for option.Config.EgressMultiHomeIPRuleCompat while configuring the rules.
-func SetupRules(from, to *net.IPNet, mac string, ifaceNum int) error {
-	var (
-		prio    int
-		tableId int
-	)
-
-	if option.Config.EgressMultiHomeIPRuleCompat {
-		prio = linux_defaults.RulePriorityEgress
-		ifindex, err := retrieveIfaceIdxFromMAC(mac)
-		if err != nil {
-			return fmt.Errorf("unable to find ifindex for interface MAC: %w", err)
-		}
-		tableId = ifindex
-	} else {
-		prio = linux_defaults.RulePriorityEgressv2
-		tableId = computeTableIDFromIfaceNumber(ifaceNum)
-	}
-	return route.ReplaceRule(route.Rule{
-		Priority: prio,
-		From:     from,
-		To:       to,
-		Table:    tableId,
-	})
-}
-
-// RetrieveIfaceNameFromMAC finds the corresponding device name for a
-// given MAC address.
-func RetrieveIfaceNameFromMAC(mac string) (string, error) {
-	iface, err := retrieveIfaceFromMAC(mac)
-	if err != nil {
-		err = fmt.Errorf("failed to get iface name with MAC %w", err)
-		return "", err
-	}
-	return iface.Attrs().Name, nil
 }
 
 func deleteRule(r route.Rule) error {
@@ -283,7 +262,7 @@ func deleteRule(r route.Rule) error {
 		}).Warning("Found too many rules matching, skipping deletion")
 		return errors.New("unexpected number of rules found to delete")
 	case length == 1:
-		return route.DeleteRule(r)
+		return route.DeleteRule(netlink.FAMILY_V4, r)
 	}
 
 	log.WithFields(logrus.Fields{
@@ -300,7 +279,7 @@ func deleteRule(r route.Rule) error {
 func retrieveIfIndexFromMAC(mac mac.MAC, mtu int) (int, error) {
 	var link netlink.Link
 
-	links, err := netlink.LinkList()
+	links, err := safenetlink.LinkList()
 	if err != nil {
 		return -1, fmt.Errorf("unable to list interfaces: %w", err)
 	}
@@ -339,35 +318,10 @@ func computeTableIDFromIfaceNumber(num int) int {
 	return linux_defaults.RouteTableInterfacesOffset + num
 }
 
-// retrieveIfaceIdxFromMAC finds the corresponding interface index for a
-// given MAC address.
-// It returns -1 as the index for error conditions.
-func retrieveIfaceIdxFromMAC(mac string) (int, error) {
-	iface, err := retrieveIfaceFromMAC(mac)
-	if err != nil {
-		err = fmt.Errorf("failed to get iface index with MAC %w", err)
-		return -1, err
+// normalizeRuleToCIDR returns nil when passed cidr is zeroes only cidr
+func normalizeRuleToCIDR(cidr *net.IPNet) *net.IPNet {
+	if cidr.IP.IsUnspecified() {
+		return nil
 	}
-	return iface.Attrs().Index, nil
-}
-
-// retrieveIfaceFromFromMAC finds the corresponding interface for a
-// given MAC address.
-func retrieveIfaceFromMAC(mac string) (link netlink.Link, err error) {
-	var links []netlink.Link
-
-	links, err = netlink.LinkList()
-	if err != nil {
-		err = fmt.Errorf("unable to list interfaces: %w", err)
-		return
-	}
-	for _, l := range links {
-		if l.Attrs().HardwareAddr.String() == mac {
-			link = l
-			return
-		}
-	}
-
-	err = fmt.Errorf("interface with MAC not found")
-	return
+	return cidr
 }

@@ -22,7 +22,12 @@ import (
 	ipamMetrics "github.com/cilium/cilium/pkg/ipam/metrics"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/metrics"
 )
+
+// Maximum number of tags for exact search of ECS resources.
+// https://www.alibabacloud.com/help/en/ecs/developer-reference/api-ecs-2014-05-26-listtagresources
+const MaxInstanceTags = 20
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "ipam-allocator-alibaba-cloud")
 
@@ -37,19 +42,16 @@ func (a *AllocatorAlibabaCloud) Init(ctx context.Context) error {
 	var aMetrics openapi.MetricsAPI
 
 	if operatorOption.Config.EnableMetrics {
-		aMetrics = apiMetrics.NewPrometheusMetrics(operatorMetrics.Namespace, "alibabacloud", operatorMetrics.Registry)
+		aMetrics = apiMetrics.NewPrometheusMetrics(metrics.Namespace, "alibabacloud", operatorMetrics.Registry)
 	} else {
 		aMetrics = &apiMetrics.NoOpMetrics{}
 	}
 
-	var err error
-	vpcID := operatorOption.Config.AlibabaCloudVPCID
-	if vpcID == "" {
-		vpcID, err = metadata.GetVPCID(ctx)
-		if err != nil {
-			return err
-		}
+	if len(operatorOption.Config.IPAMInstanceTags) > MaxInstanceTags {
+		return fmt.Errorf("number of tags in instance-tags-filter exceeds the limit %d", MaxInstanceTags)
 	}
+
+	var err error
 	regionID, err := metadata.GetRegionID(ctx)
 	if err != nil {
 		return err
@@ -76,7 +78,7 @@ func (a *AllocatorAlibabaCloud) Init(ctx context.Context) error {
 	ecsClient.GetConfig().WithScheme("HTTPS")
 
 	a.client = openapi.NewClient(vpcClient, ecsClient, aMetrics, operatorOption.Config.IPAMAPIQPSLimit,
-		operatorOption.Config.IPAMAPIBurst, map[string]string{openapi.VPCID: vpcID})
+		operatorOption.Config.IPAMAPIBurst, operatorOption.Config.IPAMInstanceTags)
 
 	if err := limits.UpdateFromAPI(ctx, a.client); err != nil {
 		return fmt.Errorf("unable to update instance type to adapter limits from AlibabaCloud API: %w", err)
@@ -94,7 +96,7 @@ func (a *AllocatorAlibabaCloud) Start(ctx context.Context, getterUpdater ipam.Ci
 	log.Info("Starting AlibabaCloud ENI allocator...")
 
 	if operatorOption.Config.EnableMetrics {
-		iMetrics = ipamMetrics.NewPrometheusMetrics(operatorMetrics.Namespace, operatorMetrics.Registry)
+		iMetrics = ipamMetrics.NewPrometheusMetrics(metrics.Namespace, operatorMetrics.Registry)
 	} else {
 		iMetrics = &ipamMetrics.NoOpMetrics{}
 	}

@@ -5,7 +5,6 @@ package ipam
 
 import (
 	"context"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -13,6 +12,7 @@ import (
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 // AzureAPI is the API surface used of the Azure API
@@ -70,6 +70,8 @@ func (m *InstancesManager) GetPoolQuota() (quota ipamTypes.PoolQuotaMap) {
 // cache in the instanceManager. It returns the time when the resync has
 // started or time.Time{} if it did not complete.
 func (m *InstancesManager) Resync(ctx context.Context) time.Time {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	resyncStart := time.Now()
 
 	vnets, subnets, err := m.api.GetVpcsAndSubnets(ctx)
@@ -90,13 +92,16 @@ func (m *InstancesManager) Resync(ctx context.Context) time.Time {
 		"numSubnets":         len(subnets),
 	}).Info("Synchronized Azure IPAM information")
 
-	m.mutex.Lock()
 	m.instances = instances
 	m.vnets = vnets
 	m.subnets = subnets
-	m.mutex.Unlock()
 
 	return resyncStart
+}
+
+func (m *InstancesManager) InstanceSync(ctx context.Context, instanceID string) time.Time {
+	// Resync for a separate instance is not implemented yet, fallback to full resync.
+	return m.Resync(ctx)
 }
 
 // DeleteInstance delete instance from m.instances

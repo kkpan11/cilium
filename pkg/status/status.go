@@ -10,15 +10,14 @@ import (
 	"os"
 	"runtime/pprof"
 	"sync/atomic"
-	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 const (
@@ -74,6 +73,9 @@ type Collector struct {
 	// lastStackdumpTime is the last time we dumped stack; only do it
 	// every 5 minutes so we don't waste resources.
 	lastStackdumpTime atomic.Int64
+
+	// Tracks whether all probes have been executed at least once.
+	firstRunSwg *lock.StoppableWaitGroup
 }
 
 // Config is the collector configuration
@@ -82,6 +84,13 @@ type Config struct {
 	FailureThreshold time.Duration
 	Interval         time.Duration
 	StackdumpPath    string
+}
+
+var DefaultConfig = Config{
+	WarningThreshold: defaults.StatusCollectorWarningThreshold,
+	FailureThreshold: defaults.StatusCollectorFailureThreshold,
+	Interval:         defaults.StatusCollectorInterval,
+	StackdumpPath:    "/run/cilium/state/agent.stack.gz",
 }
 
 // NewCollector creates a collector and starts the given probes.
@@ -93,6 +102,7 @@ func NewCollector(probes []Probe, config Config) *Collector {
 		stop:           make(chan struct{}),
 		staleProbes:    make(map[string]struct{}),
 		probeStartTime: make(map[string]time.Time),
+		firstRunSwg:    lock.NewStoppableWaitGroup(),
 	}
 
 	if c.config.Interval == time.Duration(0) {
@@ -108,14 +118,25 @@ func NewCollector(probes []Probe, config Config) *Collector {
 	}
 
 	for i := range probes {
-		c.spawnProbe(&probes[i])
+		c.spawnProbe(&probes[i], c.firstRunSwg.Add())
 	}
+	c.firstRunSwg.Stop()
 
 	return c
 }
 
+// WaitForFirstRun blocks until all probes have been executed at least once, or
+// the context gets canceled.
+func (c *Collector) WaitForFirstRun(ctx context.Context) error {
+	select {
+	case <-c.firstRunSwg.WaitChannel():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Close exits all probes and shuts down the collector
-// TODO(brb): call it when daemon exits (after GH#6248).
 func (c *Collector) Close() {
 	close(c.stop)
 }
@@ -138,12 +159,16 @@ func (c *Collector) GetStaleProbes() map[string]time.Time {
 }
 
 // spawnProbe starts a goroutine which invokes the probe at the particular interval.
-func (c *Collector) spawnProbe(p *Probe) {
+func (c *Collector) spawnProbe(p *Probe, firstRunCompleted func()) {
 	go func() {
-		timer, stopTimer := inctimer.New()
-		defer stopTimer()
 		for {
 			c.runProbe(p)
+
+			// The first run of the probe has completed.
+			if firstRunCompleted != nil {
+				firstRunCompleted()
+				firstRunCompleted = nil
+			}
 
 			interval := c.config.Interval
 			if p.Interval != nil {
@@ -153,7 +178,7 @@ func (c *Collector) spawnProbe(p *Probe) {
 			case <-c.stop:
 				// collector is closed, stop looping
 				return
-			case <-timer.After(interval):
+			case <-time.After(interval):
 				// keep looping
 			}
 		}

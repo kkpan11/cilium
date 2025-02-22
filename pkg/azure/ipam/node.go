@@ -15,7 +15,6 @@ import (
 	"github.com/cilium/cilium/pkg/ipam/stats"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
-	"github.com/cilium/cilium/pkg/math"
 )
 
 type ipamNodeActions interface {
@@ -82,7 +81,7 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 			return nil
 		}
 
-		a.InterfaceCandidates++
+		a.IPv4.InterfaceCandidates++
 
 		if a.InterfaceID == "" {
 			scopedLog.WithFields(logrus.Fields{
@@ -107,7 +106,7 @@ func (n *Node) PrepareIPAllocation(scopedLog *logrus.Entry) (a *ipam.AllocationA
 				a.InterfaceID = iface.ID
 				a.Interface = interfaceObj
 				a.PoolID = poolID
-				a.AvailableForAllocation = math.IntMin(available, availableOnInterface)
+				a.IPv4.AvailableForAllocation = min(available, availableOnInterface)
 			}
 		}
 		return nil
@@ -124,10 +123,15 @@ func (n *Node) AllocateIPs(ctx context.Context, a *ipam.AllocationAction) error 
 	}
 
 	if iface.GetVMScaleSetName() == "" {
-		return n.manager.api.AssignPrivateIpAddressesVM(ctx, string(a.PoolID), iface.Name, a.AvailableForAllocation)
+		return n.manager.api.AssignPrivateIpAddressesVM(ctx, string(a.PoolID), iface.Name, a.IPv4.AvailableForAllocation)
 	} else {
-		return n.manager.api.AssignPrivateIpAddressesVMSS(ctx, iface.GetVMID(), iface.GetVMScaleSetName(), string(a.PoolID), iface.Name, a.AvailableForAllocation)
+		return n.manager.api.AssignPrivateIpAddressesVMSS(ctx, iface.GetVMID(), iface.GetVMScaleSetName(), string(a.PoolID), iface.Name, a.IPv4.AvailableForAllocation)
 	}
+}
+
+func (n *Node) AllocateStaticIP(ctx context.Context, staticIPTags ipamTypes.Tags) (string, error) {
+	// TODO, see https://github.com/cilium/cilium/issues/34094
+	return "", fmt.Errorf("not implemented")
 }
 
 // CreateInterface is called to create a new interface. This operation is
@@ -147,7 +151,7 @@ func (n *Node) ResyncInterfacesAndIPs(ctx context.Context, scopedLog *logrus.Ent
 	// Both VMs and NICs can have a maximum of 256 addresses, so as long as
 	// there is at least one available NIC, we can allocate up to 256 addresses
 	// on the VM (minus the primary IP address).
-	stats.NodeCapacity = math.IntMax(n.GetMaximumAllocatableIPv4()-1, 0)
+	stats.NodeCapacity = max(n.GetMaximumAllocatableIPv4()-1, 0)
 
 	if n.node.InstanceID() == "" {
 		return nil, stats, nil
@@ -239,7 +243,7 @@ func isAvailableInterface(requiredIfaceName string, iface *types.AzureInterface,
 		"numAddresses": len(iface.Addresses),
 	}).Debug("Considering interface as available")
 
-	availableOnInterface = math.IntMax(types.InterfaceAddressLimit-len(iface.Addresses), 0)
+	availableOnInterface = max(types.InterfaceAddressLimit-len(iface.Addresses), 0)
 	if availableOnInterface <= 0 {
 		return 0, false
 	}

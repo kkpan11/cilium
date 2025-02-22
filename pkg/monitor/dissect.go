@@ -9,8 +9,8 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
+	"github.com/gopacket/gopacket"
+	"github.com/gopacket/gopacket/layers"
 
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging"
@@ -168,7 +168,7 @@ func GetConnectionSummary(data []byte) string {
 
 	switch {
 	case icmpCode != "":
-		return fmt.Sprintf("%s -> %s %s", srcIP, dstIP, icmpCode)
+		return fmt.Sprintf("%s -> %s %s %s", srcIP, dstIP, proto, icmpCode)
 	case proto != "":
 		var s string
 

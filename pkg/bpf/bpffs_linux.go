@@ -6,6 +6,7 @@
 package bpf
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,21 @@ func CiliumPath() string {
 	return filepath.Join(bpffsRoot, "cilium")
 }
 
+// MkdirBPF wraps [os.MkdirAll] with the right permission bits for bpffs.
+// Use this for ensuring the existence of directories on bpffs.
+func MkdirBPF(path string) error {
+	return os.MkdirAll(path, 0755)
+}
+
+// Remove path ignoring ErrNotExist.
+func Remove(path string) error {
+	err := os.RemoveAll(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing bpffs directory at %s: %w", path, err)
+	}
+	return err
+}
+
 func tcPathFromMountInfo(name string) string {
 	readMountInfo.Do(func() {
 		mountInfos, err := mountinfo.GetMountInfo()
@@ -97,15 +113,6 @@ func LocalMapPath(name string, id uint16) string {
 	return MapPath(LocalMapName(name, id))
 }
 
-// Environment returns a list of environment variables which are needed to make
-// BPF programs and tc aware of the actual BPFFS mount path.
-func Environment() []string {
-	return append(
-		os.Environ(),
-		fmt.Sprintf("TC_BPF_MNT=%s", BPFFSRoot()),
-	)
-}
-
 var (
 	mountOnce sync.Once
 )
@@ -125,11 +132,11 @@ func mountFS(printWarning bool) error {
 	mapRootStat, err := os.Stat(bpffsRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(bpffsRoot, 0755); err != nil {
-				return fmt.Errorf("unable to create bpf mount directory: %s", err)
+			if err := MkdirBPF(bpffsRoot); err != nil {
+				return fmt.Errorf("unable to create bpf mount directory: %w", err)
 			}
 		} else {
-			return fmt.Errorf("failed to stat the mount path %s: %s", bpffsRoot, err)
+			return fmt.Errorf("failed to stat the mount path %s: %w", bpffsRoot, err)
 
 		}
 	} else if !mapRootStat.IsDir() {
@@ -137,7 +144,7 @@ func mountFS(printWarning bool) error {
 	}
 
 	if err := unix.Mount(bpffsRoot, bpffsRoot, "bpf", 0, ""); err != nil {
-		return fmt.Errorf("failed to mount %s: %s", bpffsRoot, err)
+		return fmt.Errorf("failed to mount %s: %w", bpffsRoot, err)
 	}
 	return nil
 }
@@ -258,7 +265,7 @@ func checkOrMountDefaultLocations() error {
 }
 
 func checkOrMountFS(bpfRoot string) error {
-	if bpfRoot == "" {
+	if bpfRoot == "" || bpfRoot == defaults.BPFFSRoot {
 		if err := checkOrMountDefaultLocations(); err != nil {
 			return err
 		}

@@ -72,20 +72,14 @@ Deploy Cilium release via Helm:
         .. parsed-literal::
 
            helm install cilium |CHART_RELEASE| \\
-             --namespace kube-system \\
-             --set containerRuntime.integration=containerd
+             --namespace kube-system
 
 .. warning::
 
-   Kata containers do not work with the socket-level loadbalancer, or with
-   :ref:`kube-proxy replacement <kubeproxy-free>` in strict mode. These
-   features should be disabled with ``--set socketLB.enabled=false``
-   (default) and ``--set kubeProxyReplacement=disabled`` (or ``partial``).
-
-   Both features rely on socket-based load-balancing, which is not possible
-   given that Kata containers are virtual machines running with their own
-   kernel. For kube-proxy replacement, this limitation is tracked with
-   :gh-issue:`15437`.
+   When using :ref:`kube-proxy-replacement <kubeproxy-free>` or its socket-level
+   loadbalancer with Kata containers, the socket-level loadbalancer should be
+   disabled for pods by setting ``socketLB.hostNamespaceOnly=true``. See
+   :ref:`socketlb-host-netns-only` for more details.
 
 .. include:: ../../installation/k8s-install-validate.rst
 

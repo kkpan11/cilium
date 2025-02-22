@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 
@@ -18,21 +18,21 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 const (
 	// listTimeoutDefault is the default timeout to wait while performing
 	// the initial list operation of objects from the kvstore
 	listTimeoutDefault = 3 * time.Minute
-
-	// watcherChanSize is the size of the channel to buffer kvstore events
-	watcherChanSize = 100
 )
 
 var (
 	controllers controller.Manager
 
 	log = logging.DefaultLogger.WithField(logfields.LogSubsys, "shared-store")
+
+	kvstoreSyncControllerGroup = controller.NewGroup("kvstore-sync")
 )
 
 // KeyCreator is the function to create a new empty Key instances. Store
@@ -130,7 +130,10 @@ type SharedStore struct {
 	// kvstore events.
 	sharedKeys map[string]Key
 
-	kvstoreWatcher *kvstore.Watcher
+	// stop stops the kvstore watcher.
+	stop context.CancelFunc
+
+	wg sync.WaitGroup
 }
 
 // Observer receives events when objects in the store mutate
@@ -166,11 +169,12 @@ type Key interface {
 	Marshal() ([]byte, error)
 
 	// Unmarshal is called when an update from the kvstore is received. The
+	// prefix configured for the store is removed from the key, and the
 	// byte slice passed to the function is coming from the Marshal
 	// function from another collaborator. The function must unmarshal and
 	// update the underlying data type. It is typically a good idea to use
 	// json.Unmarshal to implement this function.
-	Unmarshal(data []byte) error
+	Unmarshal(key string, data []byte) error
 }
 
 // LocalKey is a Key owned by the local store instance
@@ -179,6 +183,23 @@ type LocalKey interface {
 
 	// DeepKeyCopy must return a deep copy of the key
 	DeepKeyCopy() LocalKey
+}
+
+// KVPair represents a basic implementation of the LocalKey interface
+type KVPair struct {
+	Key   string
+	Value []byte
+}
+
+func NewKVPair(key, value string) *KVPair { return &KVPair{Key: key, Value: []byte(value)} }
+func KVPairCreator() Key                  { return &KVPair{} }
+
+func (kv *KVPair) GetKeyName() string       { return kv.Key }
+func (kv *KVPair) Marshal() ([]byte, error) { return kv.Value, nil }
+
+func (kv *KVPair) Unmarshal(key string, data []byte) error {
+	kv.Key, kv.Value = key, data
+	return nil
 }
 
 // JoinSharedStore creates a new shared store based on the provided
@@ -198,6 +219,9 @@ func JoinSharedStore(c Configuration) (*SharedStore, error) {
 		backend:    c.Backend,
 	}
 
+	// Wrap the context, so that we can subsequently stop the kvstore watcher.
+	s.conf.Context, s.stop = context.WithCancel(s.conf.Context)
+
 	s.name = "store-" + s.conf.Prefix
 	s.controllerName = "kvstore-sync-" + s.name
 
@@ -207,6 +231,7 @@ func JoinSharedStore(c Configuration) (*SharedStore, error) {
 
 	controllers.UpdateController(s.controllerName,
 		controller.ControllerParams{
+			Group: kvstoreSyncControllerGroup,
 			DoFunc: func(ctx context.Context) error {
 				return s.syncLocalKeys(ctx, true)
 			},
@@ -232,14 +257,8 @@ func (s *SharedStore) onUpdate(k Key) {
 // Release frees all resources own by the store but leaves all keys in the
 // kvstore intact
 func (s *SharedStore) Release() {
-	// Wait for all write operations to complete and then block all further
-	// operations
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if s.kvstoreWatcher != nil {
-		s.kvstoreWatcher.Stop()
-	}
+	s.stop()
+	s.wg.Wait()
 
 	controllers.RemoveController(s.controllerName)
 }
@@ -391,7 +410,7 @@ func (s *SharedStore) getLogger() *logrus.Entry {
 
 func (s *SharedStore) updateKey(name string, value []byte) error {
 	newKey := s.conf.KeyCreator()
-	if err := newKey.Unmarshal(value); err != nil {
+	if err := newKey.Unmarshal(name, value); err != nil {
 		return err
 	}
 
@@ -432,7 +451,11 @@ func (s *SharedStore) deleteSharedKey(name string) {
 func (s *SharedStore) listAndStartWatcher() error {
 	listDone := make(chan struct{})
 
-	go s.watcher(listDone)
+	s.wg.Add(1)
+	go func() {
+		s.watcher(listDone)
+		s.wg.Done()
+	}()
 
 	select {
 	case <-listDone:
@@ -444,9 +467,9 @@ func (s *SharedStore) listAndStartWatcher() error {
 }
 
 func (s *SharedStore) watcher(listDone chan struct{}) {
-	s.kvstoreWatcher = s.backend.ListAndWatch(s.conf.Context, s.name+"-watcher", s.conf.Prefix, watcherChanSize)
+	events := s.backend.ListAndWatch(s.conf.Context, s.conf.Prefix)
 
-	for event := range s.kvstoreWatcher.Events {
+	for event := range events {
 		if event.Typ == kvstore.EventTypeListDone {
 			s.getLogger().Debug("Initial list of objects received from kvstore")
 			close(listDone)

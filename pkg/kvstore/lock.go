@@ -6,7 +6,6 @@ package kvstore
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/google/uuid"
@@ -14,8 +13,8 @@ import (
 
 	"github.com/cilium/cilium/pkg/debug"
 	"github.com/cilium/cilium/pkg/defaults"
-	"github.com/cilium/cilium/pkg/inctimer"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var (
@@ -79,8 +78,6 @@ func (pl *pathLocks) runGC() {
 }
 
 func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err error) {
-	lockTimer, lockTimerDone := inctimer.New()
-	defer lockTimerDone()
 	for {
 		pl.mutex.Lock()
 		if _, ok := pl.lockPaths[path]; !ok {
@@ -95,9 +92,9 @@ func (pl *pathLocks) lock(ctx context.Context, path string) (id uuid.UUID, err e
 		pl.mutex.Unlock()
 
 		select {
-		case <-lockTimer.After(time.Duration(10) * time.Millisecond):
+		case <-time.After(10 * time.Millisecond):
 		case <-ctx.Done():
-			err = fmt.Errorf("lock was cancelled: %s", ctx.Err())
+			err = fmt.Errorf("lock was cancelled: %w", ctx.Err())
 			return
 		}
 	}
@@ -133,7 +130,7 @@ func LockPath(ctx context.Context, backend BackendOperations, path string) (l *L
 	if err != nil {
 		kvstoreLocks.unlock(path, id)
 		Trace("Failed to lock", err, logrus.Fields{fieldKey: path})
-		err = fmt.Errorf("error while locking path %s: %s", path, err)
+		err = fmt.Errorf("error while locking path %s: %w", path, err)
 		return nil, err
 	}
 

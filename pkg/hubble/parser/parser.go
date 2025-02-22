@@ -25,6 +25,13 @@ import (
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 )
 
+// Decoder is an interface for the parser.
+// It decodes a monitor event into a hubble event.
+type Decoder interface {
+	// Decode transforms a monitor event into a hubble event.
+	Decode(monitorEvent *observerTypes.MonitorEvent) (*v1.Event, error)
+}
+
 // Parser for all flows
 type Parser struct {
 	l34  *threefour.Parser
@@ -43,6 +50,7 @@ func New(
 	serviceGetter getters.ServiceGetter,
 	linkGetter getters.LinkGetter,
 	cgroupGetter getters.PodMetadataGetter,
+	skipUnknownCGroupIDs bool,
 	opts ...options.Option,
 ) (*Parser, error) {
 
@@ -61,7 +69,7 @@ func New(
 		return nil, err
 	}
 
-	sock, err := sock.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, cgroupGetter)
+	sock, err := sock.New(log, endpointGetter, identityGetter, dnsGetter, ipGetter, serviceGetter, cgroupGetter, skipUnknownCGroupIDs)
 	if err != nil {
 		return nil, err
 	}

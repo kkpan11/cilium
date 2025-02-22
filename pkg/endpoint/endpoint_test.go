@@ -5,24 +5,28 @@ package endpoint
 
 import (
 	"context"
-	"net"
-	"net/netip"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-	. "gopkg.in/check.v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/cilium/cilium/pkg/datapath/fake"
+	"github.com/cilium/cilium/api/v1/models"
+	fakeTypes "github.com/cilium/cilium/pkg/datapath/fake/types"
 	datapath "github.com/cilium/cilium/pkg/datapath/types"
-	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn/restore"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/identity/cache"
 	ciliumio "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
+	corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/labelsfilter"
@@ -30,65 +34,66 @@ import (
 	"github.com/cilium/cilium/pkg/maps/ctmap"
 	"github.com/cilium/cilium/pkg/metrics"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
+	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
-	fakeConfig "github.com/cilium/cilium/pkg/option/fake"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/testutils"
 	testidentity "github.com/cilium/cilium/pkg/testutils/identity"
 	testipcache "github.com/cilium/cilium/pkg/testutils/ipcache"
 	"github.com/cilium/cilium/pkg/types"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
-// Hook up gocheck into the "go test" runner.
-func Test(t *testing.T) { TestingT(t) }
-
 type EndpointSuite struct {
-	regeneration.Owner
-	repo     *policy.Repository
-	datapath datapath.Datapath
-	mgr      fakeIdentityAllocator
+	orchestrator datapath.Orchestrator
+	repo         policy.PolicyRepository
+	mgr          *cache.CachingIdentityAllocator
 
 	// Owners interface mock
-	OnGetPolicyRepository     func() *policy.Repository
+	OnGetPolicyRepository     func() policy.PolicyRepository
 	OnGetNamedPorts           func() (npm types.NamedPortMultiMap)
 	OnQueueEndpointBuild      func(ctx context.Context, epID uint64) (func(), error)
 	OnRemoveFromEndpointQueue func(epID uint64)
-	OnGetCompilationLock      func() *lock.RWMutex
+	OnGetCompilationLock      func() datapath.CompilationLock
 	OnSendNotification        func(msg monitorAPI.AgentNotifyMessage) error
-
-	// Metrics
-	collectors []prometheus.Collector
 }
 
-// suite can be used by testing.T benchmarks or tests as a mock regeneration.Owner
-var suite = EndpointSuite{repo: policy.NewPolicyRepository(nil, nil, nil, nil)}
-var _ = Suite(&suite)
+func setupEndpointSuite(tb testing.TB) *EndpointSuite {
+	testutils.IntegrationTest(tb)
 
-func (s *EndpointSuite) SetUpSuite(c *C) {
-	testutils.IntegrationCheck(c)
+	s := &EndpointSuite{
+		orchestrator: &fakeTypes.FakeOrchestrator{},
+		repo:         policy.NewPolicyRepository(nil, nil, nil, nil, api.NewPolicyMetricsNoop()),
+		mgr:          cache.NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{}, cache.AllocatorConfig{}),
+	}
 
-	ctmap.InitMapInfo(option.CTMapEntriesGlobalTCPDefault, option.CTMapEntriesGlobalAnyDefault, true, true, true)
-	s.repo = policy.NewPolicyRepository(nil, nil, nil, nil)
 	// GetConfig the default labels prefix filter
-	err := labelsfilter.ParseLabelPrefixCfg(nil, "")
+	err := labelsfilter.ParseLabelPrefixCfg(nil, nil, "")
 	if err != nil {
 		panic("ParseLabelPrefixCfg() failed")
 	}
 
 	// Register metrics once before running the suite
-	_, s.collectors = metrics.CreateConfiguration([]string{"cilium_endpoint_state"})
-	metrics.MustRegister(s.collectors...)
+	metrics.NewLegacyMetrics().EndpointStateCount.SetEnabled(true)
+
+	/* Required to test endpoint CEP policy model */
+	kvstore.SetupDummy(tb, "etcd")
+	// The nils are only used by k8s CRD identities. We default to kvstore.
+	<-s.mgr.InitIdentityAllocator(nil)
+	node.SetTestLocalNodeStore()
+
+	tb.Cleanup(func() {
+		metrics.NewLegacyMetrics().EndpointStateCount.SetEnabled(false)
+
+		s.mgr.Close()
+		node.UnsetTestLocalNodeStore()
+	})
+
+	return s
 }
 
-func (s *EndpointSuite) TearDownSuite(c *C) {
-	// Unregister the metrics after the suite has finished
-	for _, c := range s.collectors {
-		metrics.Unregister(c)
-	}
-}
-
-func (s *EndpointSuite) GetPolicyRepository() *policy.Repository {
+func (s *EndpointSuite) GetPolicyRepository() policy.PolicyRepository {
 	return s.repo
 }
 
@@ -103,16 +108,12 @@ func (s *EndpointSuite) QueueEndpointBuild(ctx context.Context, epID uint64) (fu
 	return nil, nil
 }
 
-func (s *EndpointSuite) GetCompilationLock() *lock.RWMutex {
+func (s *EndpointSuite) GetCompilationLock() datapath.CompilationLock {
 	return nil
 }
 
 func (s *EndpointSuite) SendNotification(msg monitorAPI.AgentNotifyMessage) error {
 	return nil
-}
-
-func (s *EndpointSuite) Datapath() datapath.Datapath {
-	return s.datapath
 }
 
 func (s *EndpointSuite) GetDNSRules(epID uint16) restore.DNSRules {
@@ -122,48 +123,37 @@ func (s *EndpointSuite) GetDNSRules(epID uint16) restore.DNSRules {
 func (s *EndpointSuite) RemoveRestoredDNSRules(epID uint16) {
 }
 
-// TODO: Remove the etcd dependency from these tests with a full dummy
-// implementation of an identity allocator under pkg/testutils/identity.
-// Until we do that, these tests must rely on the real CachingIdentityAllocator
-// implementation inside.
-type fakeIdentityAllocator struct {
-	*cache.CachingIdentityAllocator
+// Loader returns a reference to the loader implementation.
+func (s *EndpointSuite) Loader() datapath.Loader {
+	return nil
 }
 
-func (f fakeIdentityAllocator) AllocateCIDRsForIPs([]net.IP, map[netip.Prefix]*identity.Identity) ([]*identity.Identity, error) {
-	return nil, nil
+// Orchestrator returns a reference to the orchestrator implementation.
+func (s *EndpointSuite) Orchestrator() datapath.Orchestrator {
+	return s.orchestrator
 }
 
-func (f fakeIdentityAllocator) ReleaseCIDRIdentitiesByID(context.Context, []identity.NumericIdentity) {
+// BandwidthManager returns a reference to the bandwidth manager implementation.
+func (s *EndpointSuite) BandwidthManager() datapath.BandwidthManager {
+	return nil
 }
 
-func NewCachingIdentityAllocator(owner cache.IdentityAllocatorOwner) fakeIdentityAllocator {
-	return fakeIdentityAllocator{
-		CachingIdentityAllocator: cache.NewCachingIdentityAllocator(owner),
-	}
+func (s *EndpointSuite) IPTablesManager() datapath.IptablesManager {
+	return nil
 }
 
-// func (f *fakeIdentityAllocator)
+func (s *EndpointSuite) AddIdentity(*identity.Identity) {}
 
-func (s *EndpointSuite) SetUpTest(c *C) {
-	/* Required to test endpoint CEP policy model */
-	kvstore.SetupDummy("etcd")
-	identity.InitWellKnownIdentities(&fakeConfig.Config{})
-	// The nils are only used by k8s CRD identities. We default to kvstore.
-	mgr := NewCachingIdentityAllocator(&testidentity.IdentityAllocatorOwnerMock{})
-	<-mgr.InitIdentityAllocator(nil, nil)
-	s.mgr = mgr
-}
+func (s *EndpointSuite) RemoveIdentity(*identity.Identity) {}
 
-func (s *EndpointSuite) TearDownTest(c *C) {
-	s.mgr.Close()
-	kvstore.Client().Close(context.TODO())
-}
+func (s *EndpointSuite) RemoveOldAddNewIdentity(*identity.Identity, *identity.Identity) {}
 
-func (s *EndpointSuite) TestEndpointStatus(c *C) {
+func TestEndpointStatus(t *testing.T) {
+	setupEndpointSuite(t)
+
 	eps := NewEndpointStatus()
 
-	c.Assert(eps.String(), Equals, "OK")
+	require.Equal(t, "OK", eps.String())
 
 	sts := &statusLogMsg{
 		Status: Status{
@@ -174,7 +164,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "OK")
+	require.Equal(t, "OK", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -185,7 +175,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -196,7 +186,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	// An OK message with priority Other can't hide a High Failure message.
 	for i := 0; i <= maxLogs; i++ {
@@ -211,7 +201,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		eps.addStatusLog(st)
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -222,7 +212,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -234,7 +224,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 	}
 	eps.addStatusLog(sts)
 	// BPF might be ok but the policy is still in fail mode.
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -245,7 +235,7 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "Failure")
+	require.Equal(t, "Failure", eps.String())
 
 	sts = &statusLogMsg{
 		Status: Status{
@@ -256,146 +246,177 @@ func (s *EndpointSuite) TestEndpointStatus(c *C) {
 		Timestamp: time.Now(),
 	}
 	eps.addStatusLog(sts)
-	c.Assert(eps.String(), Equals, "OK")
+	require.Equal(t, "OK", eps.String())
 }
 
-func (s *EndpointSuite) TestEndpointUpdateLabels(c *C) {
-	e := NewEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 100, StateWaitingForIdentity)
+func TestEndpointDatapathOptions(t *testing.T) {
+	s := setupEndpointSuite(t)
+
+	e, err := NewEndpointFromChangeModel(context.TODO(), s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, s.mgr, ctmap.NewFakeGCRunner(), &models.EndpointChangeRequest{
+		DatapathConfiguration: &models.EndpointDatapathConfiguration{
+			DisableSipVerification: true,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, option.OptionDisabled, e.Options.GetValue(option.SourceIPVerification))
+}
+
+func TestEndpointUpdateLabels(t *testing.T) {
+	s := setupEndpointSuite(t)
+
+	e := NewTestEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), 100, StateWaitingForIdentity)
 
 	// Test that inserting identity labels works
-	rev := e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
-	c.Assert(rev, Not(Equals), 0)
-	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
+	rev := e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	require.NotEqual(t, 0, rev)
+	require.Equal(t, "cilium:foo=bar;cilium:zip=zop;", string(e.OpLabels.OrchestrationIdentity.SortedList()))
 	// Test that nothing changes
-	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
-	c.Assert(rev, Equals, 0)
-	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
+	rev = e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	require.Equal(t, 0, rev)
+	require.Equal(t, "cilium:foo=bar;cilium:zip=zop;", string(e.OpLabels.OrchestrationIdentity.SortedList()))
 	// Remove one label, change the source and value of the other.
-	rev = e.replaceIdentityLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
-	c.Assert(rev, Not(Equals), 0)
-	c.Assert(string(e.OpLabels.OrchestrationIdentity.SortedList()), Equals, "nginx:foo=zop;")
+	rev = e.replaceIdentityLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "zop"}, "cilium"))
+	require.NotEqual(t, 0, rev)
+	require.Equal(t, "cilium:foo=zop;", string(e.OpLabels.OrchestrationIdentity.SortedList()))
 
 	// Test that inserting information labels works
-	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
-	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "cilium:foo=bar;cilium:zip=zop;")
-	// Remove one label, change the source and value of the other.
-	e.replaceInformationLabels(labels.Map2Labels(map[string]string{"foo": "zop"}, "nginx"))
-	c.Assert(string(e.OpLabels.OrchestrationInfo.SortedList()), Equals, "nginx:foo=zop;")
+	e.replaceInformationLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo": "bar", "zip": "zop"}, "cilium"))
+	require.Equal(t, "cilium:foo=bar;cilium:zip=zop;", string(e.OpLabels.OrchestrationInfo.SortedList()))
+
+	// Test that inserting a new nginx will also keep the previous cilium label
+	e.replaceInformationLabels("nginx", labels.Map2Labels(map[string]string{"foo2": "zop2", "zip": "zop2"}, "nginx"))
+	require.Equal(t, "cilium:foo=bar;nginx:foo2=zop2;cilium:zip=zop;", string(e.OpLabels.OrchestrationInfo.SortedList()))
+
+	// Test that we will keep the 'nginx' label because we only want to add
+	// Cilium labels.
+	e.replaceInformationLabels("cilium", labels.Map2Labels(map[string]string{"foo2": "bar2", "zip2": "zop2"}, "cilium"))
+	require.Equal(t, "nginx:foo2=zop2;cilium:zip2=zop2;", string(e.OpLabels.OrchestrationInfo.SortedList()))
+
+	// Test that we will keep the 'nginx' label because we only want to update
+	// Cilium labels.
+	e.replaceInformationLabels("cilium", labels.Map2Labels(map[string]string{"foo3": "bar3"}, "cilium"))
+	require.Equal(t, "nginx:foo2=zop2;cilium:foo3=bar3;", string(e.OpLabels.OrchestrationInfo.SortedList()))
+
+	// Test that we will not replace labels from other sources if the key is the same.
+	e.replaceInformationLabels(labels.LabelSourceAny, labels.Map2Labels(map[string]string{"foo2": "bar2"}, "cilium"))
+	require.Equal(t, "nginx:foo2=zop2;", string(e.OpLabels.OrchestrationInfo.SortedList()))
 }
 
-func (s *EndpointSuite) TestEndpointState(c *C) {
-	e := NewEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 100, StateWaitingForIdentity)
+func TestEndpointState(t *testing.T) {
+	s := setupEndpointSuite(t)
+
+	e := NewTestEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), 100, StateWaitingForIdentity)
 	e.unconditionalLock()
 	defer e.unlock()
 
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateWaitingForIdentity, false)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateWaitingForIdentity, false)
 
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateReady, true)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateReady, true)
 
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateWaitingToRegenerate, false)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateDisconnecting, true)
 
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateDisconnected, false)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateDisconnected, false)
 
-	assertStateTransition(c, e, e.setState, StateReady, StateWaitingForIdentity, true)
-	assertStateTransition(c, e, e.setState, StateReady, StateReady, false)
-	assertStateTransition(c, e, e.setState, StateReady, StateWaitingToRegenerate, true)
-	assertStateTransition(c, e, e.setState, StateReady, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateReady, StateDisconnecting, true)
-	assertStateTransition(c, e, e.setState, StateReady, StateDisconnected, false)
+	assertStateTransition(t, e, e.setState, StateReady, StateWaitingForIdentity, true)
+	assertStateTransition(t, e, e.setState, StateReady, StateReady, false)
+	assertStateTransition(t, e, e.setState, StateReady, StateWaitingToRegenerate, true)
+	assertStateTransition(t, e, e.setState, StateReady, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateReady, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateReady, StateDisconnected, false)
 
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingForIdentity, false)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateReady, false)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateWaitingToRegenerate, false)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateDisconnecting, true)
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateDisconnected, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateWaitingForIdentity, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateReady, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateDisconnected, false)
 
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingForIdentity, true)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateReady, false)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnecting, true)
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateDisconnected, false)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateWaitingForIdentity, true)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateReady, false)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateDisconnected, false)
 
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateWaitingForIdentity, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateReady, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateWaitingToRegenerate, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnecting, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnected, true)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateWaitingForIdentity, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateReady, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateDisconnecting, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateDisconnected, true)
 
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateWaitingForIdentity, false)
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateReady, false)
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateWaitingToRegenerate, false)
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateRegenerating, false)
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateDisconnecting, false)
-	assertStateTransition(c, e, e.setState, StateDisconnected, StateDisconnected, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateWaitingForIdentity, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateReady, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateRegenerating, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateDisconnecting, false)
+	assertStateTransition(t, e, e.setState, StateDisconnected, StateDisconnected, false)
 
 	// State transitions involving the "Invalid" state
-	assertStateTransition(c, e, e.setState, "", StateInvalid, false)
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateInvalid, true)
-	assertStateTransition(c, e, e.setState, StateInvalid, StateInvalid, false)
+	assertStateTransition(t, e, e.setState, "", StateInvalid, false)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateInvalid, true)
+	assertStateTransition(t, e, e.setState, StateInvalid, StateInvalid, false)
 
 	// Builder-specific transitions
 
 	// Builder can't transition to ready from waiting-to-regenerate
 	// as (another) build is pending
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
 	// Only builder knows when bpf regeneration starts
-	assertStateTransition(c, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
+	assertStateTransition(t, e, e.setState, StateWaitingToRegenerate, StateRegenerating, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
 
 	// Builder does not trigger the need for regeneration
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateRegenerating, StateWaitingToRegenerate, false)
 	// Builder transitions to ready state after build is done
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
 
 	// Check that direct transition from restoring --> regenerating is valid.
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRestoring, StateRegenerating, true)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateRestoring, StateRegenerating, true)
 
 	// Typical lifecycle
-	assertStateTransition(c, e, e.setState, "", StateWaitingForIdentity, true)
+	assertStateTransition(t, e, e.setState, "", StateWaitingForIdentity, true)
 	// Initial build does not change the state
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateRegenerating, false)
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateReady, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateRegenerating, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingForIdentity, StateReady, false)
 	// identity arrives
-	assertStateTransition(c, e, e.setState, StateWaitingForIdentity, StateReady, true)
+	assertStateTransition(t, e, e.setState, StateWaitingForIdentity, StateReady, true)
 	// a build is triggered after the identity is set
-	assertStateTransition(c, e, e.setState, StateReady, StateWaitingToRegenerate, true)
+	assertStateTransition(t, e, e.setState, StateReady, StateWaitingToRegenerate, true)
 	// build starts
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
 	// another change arrives while building
-	assertStateTransition(c, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
+	assertStateTransition(t, e, e.setState, StateRegenerating, StateWaitingToRegenerate, true)
 	// Builder's transition to ready fails due to the queued build
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateReady, false)
 	// second build starts
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateRegenerating, true)
 	// second build finishes
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateRegenerating, StateReady, true)
 	// endpoint is being deleted
-	assertStateTransition(c, e, e.setState, StateReady, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateReady, StateDisconnecting, true)
 	// parallel disconnect fails
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnecting, false)
-	assertStateTransition(c, e, e.setState, StateDisconnecting, StateDisconnected, true)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateDisconnecting, false)
+	assertStateTransition(t, e, e.setState, StateDisconnecting, StateDisconnected, true)
 
 	// Restoring state
-	assertStateTransition(c, e, e.setState, StateRestoring, StateWaitingToRegenerate, false)
-	assertStateTransition(c, e, e.setState, StateRestoring, StateDisconnecting, true)
+	assertStateTransition(t, e, e.setState, StateRestoring, StateWaitingToRegenerate, false)
+	assertStateTransition(t, e, e.setState, StateRestoring, StateDisconnecting, true)
 
-	assertStateTransition(c, e, e.setState, StateRestoring, StateRestoring, true)
+	assertStateTransition(t, e, e.setState, StateRestoring, StateRestoring, true)
 
 	// Invalid state
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateInvalid, StateReady, false)
-	assertStateTransition(c, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateInvalid, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateInvalid, StateReady, false)
+	assertStateTransition(t, e, e.BuilderSetStateLocked, StateWaitingToRegenerate, StateInvalid, false)
 }
 
-func assertStateTransition(c *C,
+func assertStateTransition(t *testing.T,
 	e *Endpoint, stateSetter func(toState State, reason string) bool,
 	from, to State,
-	success bool) {
-
+	success bool,
+) {
 	e.state = from
 
 	currStateOldMetric := getMetricValue(e.state)
@@ -404,7 +425,7 @@ func assertStateTransition(c *C,
 	currStateNewMetric := getMetricValue(from)
 	newStateNewMetric := getMetricValue(e.state)
 
-	c.Assert(got, Equals, success)
+	require.Equal(t, success, got)
 
 	// Do not assert on metrics if the endpoint is not expected to transition.
 	if !success {
@@ -414,24 +435,24 @@ func assertStateTransition(c *C,
 	// If the state transition moves from itself to itself, we expect the
 	// metrics to be unchanged.
 	if from == to {
-		c.Assert(currStateOldMetric, Equals, currStateNewMetric)
-		c.Assert(newStateOldMetric, Equals, newStateNewMetric)
+		require.Equal(t, currStateNewMetric, currStateOldMetric)
+		require.Equal(t, newStateNewMetric, newStateOldMetric)
 	} else {
 		// Blank states don't have metrics so we skip over that; metric should
 		// be unchanged.
 		if from != "" {
-			c.Assert(currStateOldMetric-1, Equals, currStateNewMetric)
+			require.Equal(t, currStateNewMetric, currStateOldMetric-1)
 		} else {
-			c.Assert(currStateOldMetric, Equals, currStateNewMetric)
+			require.Equal(t, currStateNewMetric, currStateOldMetric)
 		}
 
 		// Don't assert on state transition that ends up in a final state, as
 		// the metric is not incremented in this case; metric should be
 		// unchanged.
 		if !isFinalState(to) {
-			c.Assert(newStateOldMetric+1, Equals, newStateNewMetric)
+			require.Equal(t, newStateNewMetric, newStateOldMetric+1)
 		} else {
-			c.Assert(newStateOldMetric, Equals, newStateNewMetric)
+			require.Equal(t, newStateNewMetric, newStateOldMetric)
 		}
 	}
 }
@@ -444,7 +465,9 @@ func getMetricValue(state State) int64 {
 	return int64(metrics.GetGaugeValue(metrics.EndpointStateCount.WithLabelValues(string(state))))
 }
 
-func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
+func TestWaitForPolicyRevision(t *testing.T) {
+	setupEndpointSuite(t)
+
 	e := &Endpoint{policyRevision: 0}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(1*time.Second))
@@ -452,9 +475,9 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 	cbRan := false
 	<-e.WaitForPolicyRevision(ctx, 0, func(time.Time) { cbRan = true })
 	// shouldn't get a timeout when waiting for policy revision already reached
-	c.Assert(ctx.Err(), IsNil)
+	require.NoError(t, ctx.Err())
 	// Should see a callback when waiting for a policy revision already reached
-	c.Assert(cbRan, Equals, true)
+	require.True(t, cbRan)
 
 	cancel()
 
@@ -465,9 +488,9 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 
 	<-e.WaitForPolicyRevision(ctx, 0, func(time.Time) { cbRan = true })
 	// shouldn't get a timeout when waiting for policy revision already reached
-	c.Assert(ctx.Err(), IsNil)
+	require.NoError(t, ctx.Err())
 	// Should see a callback because the channel returned
-	c.Assert(cbRan, Equals, true)
+	require.True(t, cbRan)
 
 	cancel()
 
@@ -479,20 +502,20 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 	ch := e.WaitForPolicyRevision(ctx, 2, func(time.Time) { cbRan = true })
 	cancel()
 	// context was prematurely closed on purpose the error should be nil
-	c.Assert(ctx.Err(), Equals, context.Canceled)
+	require.Equal(t, context.Canceled, ctx.Err())
 	// Should not see a callback when we don't close the channel
-	c.Assert(cbRan, Equals, false)
+	require.False(t, cbRan)
 
 	e.setPolicyRevision(3)
 
 	select {
 	case <-ch:
 	default:
-		c.Fatalf("channel should have been closed since the wanted policy revision was reached")
+		t.Fatalf("channel should have been closed since the wanted policy revision was reached")
 	}
 
 	// Number of policy revision signals should be 0
-	c.Assert(len(e.policyRevisionSignals), Equals, 0)
+	require.Empty(t, e.policyRevisionSignals)
 
 	e.state = StateDisconnected
 
@@ -503,13 +526,13 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 	select {
 	case <-ch:
 	default:
-		c.Fatalf("channel should have been closed since the endpoint is in disconnected state")
+		t.Fatalf("channel should have been closed since the endpoint is in disconnected state")
 	}
 	// Should see a callback because the channel was closed
-	c.Assert(cbRan, Equals, true)
+	require.True(t, cbRan)
 
 	// Number of policy revision signals should be 0
-	c.Assert(len(e.policyRevisionSignals), Equals, 0)
+	require.Empty(t, e.policyRevisionSignals)
 
 	e.state = StateWaitingForIdentity
 	ctx, cancel = context.WithCancel(context.Background())
@@ -520,27 +543,52 @@ func (s *EndpointSuite) TestWaitForPolicyRevision(c *C) {
 	select {
 	case <-ch:
 	default:
-		c.Fatalf("channel should have been closed since all policy signals were closed")
+		t.Fatalf("channel should have been closed since all policy signals were closed")
 	}
 	// Should see a callback because the channel was closed
-	c.Assert(cbRan, Equals, true)
+	require.True(t, cbRan)
 	cancel()
 
 	// Number of policy revision signals should be 0
-	c.Assert(len(e.policyRevisionSignals), Equals, 0)
+	require.Empty(t, e.policyRevisionSignals)
 }
 
-func (s *EndpointSuite) TestProxyID(c *C) {
-	e := &Endpoint{ID: 123, policyRevision: 0}
+func TestProxyID(t *testing.T) {
+	setupEndpointSuite(t)
 
-	id := e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true})
-	c.Assert(id, Not(Equals), "")
-	endpointID, ingress, protocol, port, err := policy.ParseProxyID(id)
-	c.Assert(endpointID, Equals, uint16(123))
-	c.Assert(ingress, Equals, true)
-	c.Assert(protocol, Equals, "TCP")
-	c.Assert(port, Equals, uint16(8080))
-	c.Assert(err, IsNil)
+	e := &Endpoint{ID: 123, policyRevision: 0}
+	e.UpdateLogger(nil)
+
+	id, port, proto := e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true}, "")
+	require.NotEqual(t, "", id)
+	require.Equal(t, uint16(8080), port)
+	require.Equal(t, u8proto.TCP, proto)
+
+	endpointID, ingress, protocol, port, listener, err := policy.ParseProxyID(id)
+	require.Equal(t, uint16(123), endpointID)
+	require.True(t, ingress)
+	require.Equal(t, "TCP", protocol)
+	require.Equal(t, uint16(8080), port)
+	require.Equal(t, "", listener)
+	require.NoError(t, err)
+
+	id, port, proto = e.proxyID(&policy.L4Filter{Port: 8080, Protocol: api.ProtoTCP, Ingress: true, L7Parser: policy.ParserTypeCRD}, "test-listener")
+	require.NotEqual(t, "", id)
+	require.Equal(t, uint16(8080), port)
+	require.Equal(t, u8proto.TCP, proto)
+	endpointID, ingress, protocol, port, listener, err = policy.ParseProxyID(id)
+	require.Equal(t, uint16(123), endpointID)
+	require.True(t, ingress)
+	require.Equal(t, "TCP", protocol)
+	require.Equal(t, uint16(8080), port)
+	require.Equal(t, "test-listener", listener)
+	require.NoError(t, err)
+
+	// Undefined named port
+	id, port, proto = e.proxyID(&policy.L4Filter{PortName: "foobar", Protocol: api.ProtoTCP, Ingress: true}, "")
+	require.Equal(t, "", id)
+	require.Equal(t, uint16(0), port)
+	require.Equal(t, u8proto.ANY, proto)
 }
 
 func TestEndpoint_GetK8sPodLabels(t *testing.T) {
@@ -605,12 +653,12 @@ func TestEndpoint_GetK8sPodLabels(t *testing.T) {
 	}
 }
 
-func (s *EndpointSuite) TestK8sPodNameIsSet(c *C) {
+func TestK8sPodNameIsSet(t *testing.T) {
 	e := Endpoint{}
-	c.Assert(e.K8sNamespaceAndPodNameIsSet(), Equals, false)
+	require.False(t, e.K8sNamespaceAndPodNameIsSet())
 	e.K8sPodName = "foo"
 	e.K8sNamespace = "default"
-	c.Assert(e.K8sNamespaceAndPodNameIsSet(), Equals, true)
+	require.True(t, e.K8sNamespaceAndPodNameIsSet())
 }
 
 type EndpointDeadlockEvent struct {
@@ -637,27 +685,21 @@ func (n *EndpointDeadlockEvent) Handle(ifc chan interface{}) {
 
 // This unit test is a bit weird - see
 // https://github.com/cilium/cilium/pull/8687 .
-func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
+func TestEndpointEventQueueDeadlockUponStop(t *testing.T) {
+	s := setupEndpointSuite(t)
+
 	// Need to modify global configuration (hooray!), change back when test is
 	// done.
 	oldQueueSize := option.Config.EndpointQueueSize
-	oldDryMode := option.Config.DryMode
 	option.Config.EndpointQueueSize = 1
-	option.Config.DryMode = true
 	defer func() {
 		option.Config.EndpointQueueSize = oldQueueSize
-		option.Config.DryMode = oldDryMode
 	}()
 
-	oldDatapath := s.datapath
+	ep := NewTestEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), 12345, StateReady)
 
-	s.datapath = fake.NewDatapath()
-
-	defer func() {
-		s.datapath = oldDatapath
-	}()
-
-	ep := NewEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 12345, StateReady)
+	ep.properties[PropertyFakeEndpoint] = true
+	ep.properties[PropertySkipBPFPolicy] = true
 
 	// In case deadlock occurs, provide a timeout of 3 (number of events) *
 	// deadlockTimeout + 1 seconds to ensure that we are actually testing for
@@ -697,12 +739,12 @@ func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
 
 	go func() {
 		_, err := ep.eventQueue.Enqueue(ev)
-		c.Assert(err, IsNil)
+		require.NoError(t, err)
 		_, err = ep.eventQueue.Enqueue(ev2)
-		c.Assert(err, IsNil)
+		require.NoError(t, err)
 		close(ev2EnqueueCh)
 		_, err = ep.eventQueue.Enqueue(ev3)
-		c.Assert(err, IsNil)
+		require.NoError(t, err)
 	}()
 
 	// Ensure that the second event is enqueued before proceeding further, as
@@ -720,15 +762,17 @@ func (s *EndpointSuite) TestEndpointEventQueueDeadlockUponStop(c *C) {
 
 	select {
 	case <-ctx.Done():
-		c.Log("endpoint deletion did not complete in time")
-		c.Fail()
+		t.Log("endpoint deletion did not complete in time")
+		t.Fail()
 	case <-epStopComplete:
 		// Success, do nothing.
 	}
 }
 
 func BenchmarkEndpointGetModel(b *testing.B) {
-	e := NewEndpointWithState(&suite, &suite, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), 123, StateWaitingForIdentity)
+	s := setupEndpointSuite(b)
+
+	e := NewTestEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{}, testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), 123, StateWaitingForIdentity)
 
 	for i := 0; i < 256; i++ {
 		e.LogStatusOK(BPF, "Hello World!")
@@ -762,4 +806,54 @@ func (e *Endpoint) getK8sPodLabels() labels.Labels {
 		}
 	}
 	return k8sEPPodLabels
+}
+
+func TestMetadataResolver(t *testing.T) {
+	s := setupEndpointSuite(t)
+
+	tests := []struct {
+		name            string
+		resolveMetadata MetadataResolverCB
+		assert          assert.ErrorAssertionFunc
+	}{
+		{
+			name: "pod not found",
+			resolveMetadata: func(ns, podName, uid string) (pod *corev1.Pod, k8sMetadata *K8sMetadata, err error) {
+				return nil, nil, k8sErrors.NewNotFound(schema.GroupResource{Group: "core", Resource: "pod"}, "foo")
+			},
+			assert: assert.Error,
+		},
+		{
+			name: "pod uid mismatch",
+			resolveMetadata: func(ns, podName, uid string) (pod *corev1.Pod, k8sMetadata *K8sMetadata, err error) {
+				return nil, nil, errors.New("uid mismatch")
+			},
+			assert: assert.Error,
+		},
+		{
+			name: "pod uid match",
+			resolveMetadata: func(ns, podName, uid string) (pod *corev1.Pod, k8sMetadata *K8sMetadata, err error) {
+				return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+					Namespace: "bar", Name: "foo", UID: "uid",
+				}}, &K8sMetadata{IdentityLabels: labels.NewLabelsFromSortedList("k8s:foo=bar;k8s:qux=fred;")}, nil
+			},
+			assert: assert.NoError,
+		},
+	}
+
+	for _, restored := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s (restored=%t)", tt.name, restored), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				ep := NewTestEndpointWithState(s, s, testipcache.NewMockIPCache(), &FakeEndpointProxy{},
+					testidentity.NewMockIdentityAllocator(nil), ctmap.NewFakeGCRunner(), 123, StateWaitingForIdentity)
+				ep.K8sNamespace, ep.K8sPodName, ep.K8sUID = "bar", "foo", "uid"
+
+				_, err := ep.metadataResolver(ctx, restored, true, labels.Labels{}, &fakeTypes.BandwidthManager{}, tt.resolveMetadata)
+				tt.assert(t, err)
+			})
+		}
+	}
 }

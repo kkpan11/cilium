@@ -18,6 +18,8 @@ import (
 	k8sClient "github.com/cilium/cilium/pkg/k8s/client"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/metrics"
+	"github.com/cilium/cilium/pkg/metrics/metric"
 )
 
 const (
@@ -27,9 +29,29 @@ const (
 
 var (
 	lastPodRestart = map[string]time.Time{}
+
+	restartUnmanagedPodsControllerGroup = controller.NewGroup("restart-unmanaged-pods")
 )
 
-func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientset k8sClient.Clientset) {
+type UnmanagedPodsMetric struct {
+	// UnmanagedPods records the pods that are unmanaged by Cilium.
+	// This includes Running pods not using hostNetwork, which do not have a corresponding CiliumEndpoint object.
+	UnmanagedPods metric.Gauge
+}
+
+func NewUnmanagedPodsMetric() *UnmanagedPodsMetric {
+	return &UnmanagedPodsMetric{
+		UnmanagedPods: metric.NewGauge(
+			metric.GaugeOpts{
+				Namespace: metrics.CiliumOperatorNamespace,
+				Name:      "unmanaged_pods",
+				Help:      "The total number of pods observed to be unmanaged by Cilium operator",
+			},
+		),
+	}
+}
+
+func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientset k8sClient.Clientset, metrics *UnmanagedPodsMetric) {
 	// These functions will block until the resources are synced with k8s.
 	watchers.CiliumEndpointsInit(ctx, wg, clientset)
 	watchers.UnmanagedPodsInit(ctx, wg, clientset)
@@ -45,6 +67,7 @@ func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientse
 
 	mgr.UpdateController("restart-unmanaged-pods",
 		controller.ControllerParams{
+			Group:       restartUnmanagedPodsControllerGroup,
 			RunInterval: time.Duration(operatorOption.Config.UnmanagedPodWatcherInterval) * time.Second,
 			DoFunc: func(ctx context.Context) error {
 				for podName, lastRestart := range lastPodRestart {
@@ -52,6 +75,7 @@ func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientse
 						delete(lastPodRestart, podName)
 					}
 				}
+				countUnmanagedPods := 0
 				for _, podItem := range watchers.UnmanagedPodStore.List() {
 					pod, ok := podItem.(*slim_corev1.Pod)
 					if !ok {
@@ -74,7 +98,9 @@ func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientse
 							logfields.Identity:   cep.Status.ID,
 						}).Debug("Found managed pod due to presence of a CEP")
 					} else {
+						countUnmanagedPods++
 						log.WithField(logfields.K8sPodName, podID).Debugf("Found unmanaged pod")
+
 						if startTime := pod.Status.StartTime; startTime != nil {
 							if age := time.Since((*startTime).Time); age > unmanagedPodMinimalAge {
 								if lastRestart, ok := lastPodRestart[podID]; ok {
@@ -99,7 +125,7 @@ func enableUnmanagedController(ctx context.Context, wg *sync.WaitGroup, clientse
 						}
 					}
 				}
-
+				metrics.UnmanagedPods.Set(float64(countUnmanagedPods))
 				return nil
 			},
 		})

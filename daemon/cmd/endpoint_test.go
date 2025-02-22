@@ -5,28 +5,37 @@ package cmd
 
 import (
 	"context"
-	"net"
+	"fmt"
+	"net/netip"
 	"runtime"
+	"testing"
 	"time"
 
-	. "gopkg.in/check.v1"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/cilium/cilium/api/v1/models"
 	apiEndpoint "github.com/cilium/cilium/api/v1/server/restapi/endpoint"
-	"github.com/cilium/cilium/pkg/checker"
+	"github.com/cilium/cilium/pkg/endpoint"
 	endpointid "github.com/cilium/cilium/pkg/endpoint/id"
 	"github.com/cilium/cilium/pkg/identity"
 	"github.com/cilium/cilium/pkg/ipam"
+	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
+	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
+	"github.com/cilium/cilium/pkg/labelsfilter"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/testutils"
 )
 
-func getEPTemplate(c *C, d *Daemon) *models.EndpointChangeRequest {
-	ip4, ip6, err := d.ipam.AllocateNext("", "test", ipam.PoolDefault)
-	c.Assert(err, Equals, nil)
-	c.Assert(ip4, Not(IsNil))
-	c.Assert(ip6, Not(IsNil))
+func getEPTemplate(t *testing.T, d *Daemon) *models.EndpointChangeRequest {
+	ip4, ip6, err := d.ipam.AllocateNext("", "test", ipam.PoolDefault())
+	require.NoError(t, err)
+	require.NotNil(t, ip4)
+	require.NotNil(t, ip6)
 
 	return &models.EndpointChangeRequest{
 		ContainerName: "foo",
@@ -35,106 +44,137 @@ func getEPTemplate(c *C, d *Daemon) *models.EndpointChangeRequest {
 			IPV6: ip6.IP.String(),
 			IPV4: ip4.IP.String(),
 		},
+		Properties: map[string]interface{}{
+			endpoint.PropertySkipBPFRegeneration: true,
+			endpoint.PropertyFakeEndpoint:        true,
+		},
 	}
 }
 
-func (ds *DaemonSuite) TestEndpointAddReservedLabel(c *C) {
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+func TestEndpointAddReservedLabelEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testEndpointAddReservedLabel(t)
+}
 
-	epTemplate := getEPTemplate(c, ds.d)
+func (ds *DaemonSuite) testEndpointAddReservedLabel(t *testing.T) {
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+
+	epTemplate := getEPTemplate(t, ds.d)
 	epTemplate.Labels = []string{"reserved:world"}
 	_, code, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	c.Assert(err, Not(IsNil))
-	c.Assert(code, Equals, apiEndpoint.PutEndpointIDInvalidCode)
+	require.Error(t, err)
+	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
 	// WaitingForIdentity -> Invalid.
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
-	assertOnMetric(c, string(models.EndpointStateInvalid), 0)
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+	assertOnMetric(t, string(models.EndpointStateInvalid), 0)
 
 	// Endpoint is created with initial label as well as disallowed
 	// reserved:world label.
 	epTemplate.Labels = append(epTemplate.Labels, "reserved:init")
 	_, code, err = ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	c.Assert(err, ErrorMatches, "not allowed to add reserved labels:.+")
-	c.Assert(code, Equals, apiEndpoint.PutEndpointIDInvalidCode)
+	require.Condition(t, errorMatch(err, "not allowed to add reserved labels:.+"))
+	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
 	// WaitingForIdentity -> Invalid.
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
-	assertOnMetric(c, string(models.EndpointStateInvalid), 0)
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+	assertOnMetric(t, string(models.EndpointStateInvalid), 0)
 }
 
-func (ds *DaemonSuite) TestEndpointAddInvalidLabel(c *C) {
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+func TestEndpointAddInvalidLabelEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testEndpointAddInvalidLabel(t)
+}
 
-	epTemplate := getEPTemplate(c, ds.d)
+func (ds *DaemonSuite) testEndpointAddInvalidLabel(t *testing.T) {
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+
+	epTemplate := getEPTemplate(t, ds.d)
 	epTemplate.Labels = []string{"reserved:foo"}
 	_, code, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	c.Assert(err, Not(IsNil))
-	c.Assert(code, Equals, apiEndpoint.PutEndpointIDInvalidCode)
+	require.Error(t, err)
+	require.Equal(t, apiEndpoint.PutEndpointIDInvalidCode, code)
 
 	// Endpoint was created with invalid data; should transition from
 	// WaitingForIdentity -> Invalid.
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
-	assertOnMetric(c, string(models.EndpointStateInvalid), 0)
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+	assertOnMetric(t, string(models.EndpointStateInvalid), 0)
 }
 
-func (ds *DaemonSuite) TestEndpointAddNoLabels(c *C) {
-	assertOnMetric(c, string(models.EndpointStateWaitingDashForDashIdentity), 0)
+func TestEndpointAddNoLabelsEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testEndpointAddNoLabels(t)
+}
+
+func (ds *DaemonSuite) testEndpointAddNoLabels(t *testing.T) {
+	assertOnMetric(t, string(models.EndpointStateWaitingDashForDashIdentity), 0)
 
 	// For this test case, we want to allow the endpoint controllers to rebuild
 	// the endpoint after getting new labels.
 	ds.OnQueueEndpointBuild = ds.d.QueueEndpointBuild
 
 	// Create the endpoint without any labels.
-	epTemplate := getEPTemplate(c, ds.d)
+	epTemplate := getEPTemplate(t, ds.d)
 	_, _, err := ds.d.createEndpoint(context.TODO(), ds, epTemplate)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	expectedLabels := labels.Labels{
 		labels.IDNameInit: labels.NewLabel(labels.IDNameInit, "", labels.LabelSourceReserved),
 	}
 	// Check that the endpoint has the reserved:init label.
-	ep, err := ds.d.endpointManager.Lookup(endpointid.NewIPPrefixID(net.ParseIP(epTemplate.Addressing.IPV4)))
-	c.Assert(err, IsNil)
-	c.Assert(ep.OpLabels.IdentityLabels(), checker.DeepEquals, expectedLabels)
+	v4ip, err := netip.ParseAddr(epTemplate.Addressing.IPV4)
+	require.NoError(t, err)
+	ep, err := ds.d.endpointManager.Lookup(endpointid.NewIPPrefixID(v4ip))
+	require.NoError(t, err)
+	require.EqualValues(t, expectedLabels, ep.OpLabels.IdentityLabels())
 
 	secID := ep.WaitForIdentity(3 * time.Second)
-	c.Assert(secID, Not(IsNil))
-	c.Assert(secID.ID, Equals, identity.ReservedIdentityInit)
+	require.NotNil(t, secID)
+	require.Equal(t, identity.ReservedIdentityInit, secID.ID)
 
 	// Endpoint should transition from Regenerating -> Ready after we've
 	// waitied for its new identity. The presence of new labels triggers a
 	// regeneration.
-	assertOnMetric(c, string(models.EndpointStateRegenerating), 0)
-	assertOnMetric(c, string(models.EndpointStateReady), 1)
+	assertOnMetric(t, string(models.EndpointStateRegenerating), 0)
+	assertOnMetric(t, string(models.EndpointStateReady), 1)
 }
 
-func (ds *DaemonSuite) TestUpdateSecLabels(c *C) {
+func (ds *DaemonSuite) testUpdateSecLabels(t *testing.T) {
 	lbls := labels.NewLabelsFromModel([]string{"reserved:world"})
 	code, err := ds.d.modifyEndpointIdentityLabelsFromAPI("1", lbls, nil)
-	c.Assert(err, Not(IsNil))
-	c.Assert(code, Equals, apiEndpoint.PatchEndpointIDLabelsUpdateFailedCode)
+	require.Error(t, err)
+	require.Equal(t, apiEndpoint.PatchEndpointIDLabelsUpdateFailedCode, code)
 }
 
-func (ds *DaemonSuite) TestUpdateLabelsFailed(c *C) {
+func TestUpdateSecLabelsEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testUpdateSecLabels(t)
+}
+
+func (ds *DaemonSuite) testUpdateLabelsFailed(t *testing.T) {
 	cancelledContext, cancelFunc := context.WithTimeout(context.Background(), 1*time.Second)
 	cancelFunc() // Cancel immediately to trigger the codepath to test.
 
 	// Create the endpoint without any labels.
-	epTemplate := getEPTemplate(c, ds.d)
+	epTemplate := getEPTemplate(t, ds.d)
 	_, _, err := ds.d.createEndpoint(cancelledContext, ds, epTemplate)
-	c.Assert(err, ErrorMatches, "request cancelled while resolving identity")
+	require.ErrorContains(t, err, "request cancelled while resolving identity")
 
-	assertOnMetric(c, string(models.EndpointStateReady), 0)
+	assertOnMetric(t, string(models.EndpointStateReady), 0)
+}
+
+func TestUpdateLabelsFailedEtcd(t *testing.T) {
+	ds := setupDaemonEtcdSuite(t)
+	ds.testUpdateLabelsFailed(t)
 }
 
 func getMetricValue(state string) int64 {
 	return int64(metrics.GetGaugeValue(metrics.EndpointStateCount.WithLabelValues(state)))
 }
 
-func assertOnMetric(c *C, state string, expected int64) {
+func assertOnMetric(t *testing.T, state string, expected int64) {
 	_, _, line, _ := runtime.Caller(1)
 
 	obtainedValues := make(map[int64]struct{}, 0)
@@ -147,7 +187,109 @@ func assertOnMetric(c *C, state string, expected int64) {
 		// We are printing the map here to show every unique obtained metrics
 		// value because these values change rapidly and it may be misleading
 		// to only show the last obtained value.
-		c.Errorf("Metrics assertion failed on line %d for Endpoint state %s: obtained %v, expected %d",
+		t.Errorf("Metrics assertion failed on line %d for Endpoint state %s: obtained %v, expected %d",
 			line, state, obtainedValues, expected)
+	}
+}
+
+type fetcherFn func(run uint, nsName, podName string) (*slim_corev1.Pod, error)
+type fetcher struct {
+	fn   fetcherFn
+	runs uint
+}
+
+func (f *fetcher) FetchNamespace(nsName string) (*slim_corev1.Namespace, error) {
+	return &slim_corev1.Namespace{ObjectMeta: slim_metav1.ObjectMeta{Name: nsName}}, nil
+}
+
+func (f *fetcher) FetchPod(nsName, podName string) (*slim_corev1.Pod, error) {
+	defer func() { f.runs++ }()
+	return f.fn(f.runs, nsName, podName)
+}
+
+func TestHandleOutdatedPodInformer(t *testing.T) {
+	defer func(current time.Duration) { handleOutdatedPodInformerRetryPeriod = current }(handleOutdatedPodInformerRetryPeriod)
+	handleOutdatedPodInformerRetryPeriod = 1 * time.Millisecond
+
+	require.NoError(t, labelsfilter.ParseLabelPrefixCfg(nil, nil, ""))
+
+	notFoundErr := k8sErrors.NewNotFound(schema.GroupResource{Group: "core", Resource: "pod"}, "foo")
+
+	tests := []struct {
+		name    string
+		epUID   string
+		fetcher fetcherFn
+		err     func(uid string) error
+		retries uint
+	}{
+		{
+			name: "pod not found",
+			fetcher: func(_ uint, nsName, podName string) (*slim_corev1.Pod, error) {
+				return nil, notFoundErr
+			},
+			err: func(string) error { return notFoundErr },
+		},
+		{
+			name: "uid mismatch",
+			fetcher: func(_ uint, nsName, podName string) (*slim_corev1.Pod, error) {
+				return &slim_corev1.Pod{ObjectMeta: slim_metav1.ObjectMeta{
+					Name: podName, Namespace: nsName, UID: "other",
+				}}, nil
+			},
+			err: func(uid string) error {
+				if uid == "" {
+					return nil
+				}
+				return podStoreOutdatedErr
+			},
+			retries: 20,
+		},
+		{
+			name: "uid mismatch, then resolved",
+			fetcher: func(run uint, nsName, podName string) (*slim_corev1.Pod, error) {
+				uid := types.UID("uid")
+				if run < 5 {
+					uid = types.UID("other")
+				}
+
+				return &slim_corev1.Pod{ObjectMeta: slim_metav1.ObjectMeta{
+					Name: podName, Namespace: nsName, UID: uid,
+				}}, nil
+			},
+			err:     func(string) error { return nil },
+			retries: 6,
+		},
+		{
+			name: "pod found",
+			fetcher: func(_ uint, nsName, podName string) (*slim_corev1.Pod, error) {
+				return &slim_corev1.Pod{ObjectMeta: slim_metav1.ObjectMeta{
+					Name: podName, Namespace: nsName, UID: "uid",
+				}}, nil
+			},
+			err: func(string) error { return nil },
+		},
+	}
+
+	for _, epUID := range []string{"", "uid"} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s (epUID: %s)", tt.name, epUID), func(t *testing.T) {
+				fetcher := fetcher{fn: tt.fetcher}
+				daemon := Daemon{endpointMetadataFetcher: &fetcher}
+				ep := endpoint.Endpoint{K8sPodName: "foo", K8sNamespace: "bar", K8sUID: epUID}
+
+				pod, meta, err := daemon.handleOutdatedPodInformer(context.Background(), &ep)
+				assert.Equal(t, tt.err(epUID), err)
+				if tt.err(epUID) == nil {
+					assert.NotNil(t, pod)
+					assert.NotNil(t, meta)
+				}
+
+				retries := uint(1)
+				if tt.retries > 0 && epUID != "" {
+					retries = tt.retries
+				}
+				assert.EqualValues(t, retries, fetcher.runs, "Incorrect number of retries")
+			})
+		}
 	}
 }

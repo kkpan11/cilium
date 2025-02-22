@@ -1,13 +1,16 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __LIB_IPV4__
-#define __LIB_IPV4__
+#pragma once
 
 #include <linux/ip.h>
 
 #include "dbg.h"
+#include "l4.h"
 #include "metrics.h"
+
+#define IPV4_SADDR_OFF		offsetof(struct iphdr, saddr)
+#define IPV4_DADDR_OFF		offsetof(struct iphdr, daddr)
 
 struct ipv4_frag_id {
 	__be32	daddr;
@@ -37,14 +40,14 @@ ipv4_csum_update_by_value(struct __ctx_buff *ctx, int l3_off, __u64 old_val,
 			  __u64 new_val, __u32 len)
 {
 	return l3_csum_replace(ctx, l3_off + offsetof(struct iphdr, check),
-			       old_val, new_val, len);
+			       (__u32)old_val, (__u32)new_val, len);
 }
 
 static __always_inline int
 ipv4_csum_update_by_diff(struct __ctx_buff *ctx, int l3_off, __u64 diff)
 {
 	return l3_csum_replace(ctx, l3_off + offsetof(struct iphdr, check),
-			       0, diff, 0);
+			       0, (__u32)diff, 0);
 }
 
 static __always_inline int ipv4_load_daddr(struct __ctx_buff *ctx, int off,
@@ -54,17 +57,19 @@ static __always_inline int ipv4_load_daddr(struct __ctx_buff *ctx, int off,
 }
 
 static __always_inline int ipv4_dec_ttl(struct __ctx_buff *ctx, int off,
-					const struct iphdr *ip4)
+					struct iphdr *ip4)
 {
 	__u8 new_ttl, ttl = ip4->ttl;
 
 	if (ttl <= 1)
-		return 1;
+		return DROP_TTL_EXCEEDED;
 
 	new_ttl = ttl - 1;
+	ip4->ttl = new_ttl;
+
 	/* l3_csum_replace() takes at min 2 bytes, zero extended. */
-	ipv4_csum_update_by_value(ctx, off, ttl, new_ttl, 2);
-	ctx_store_bytes(ctx, off + offsetof(struct iphdr, ttl), &new_ttl, sizeof(new_ttl), 0);
+	if (ipv4_csum_update_by_value(ctx, off, ttl, new_ttl, 2) < 0)
+		return DROP_CSUM_L3;
 
 	return 0;
 }
@@ -130,7 +135,6 @@ ipv4_handle_fragmentation(struct __ctx_buff *ctx,
 			  bool *has_l4_header)
 {
 	bool is_fragment, not_first_fragment;
-	enum metric_dir dir;
 	int ret;
 
 	struct ipv4_frag_id frag_id = {
@@ -142,11 +146,8 @@ ipv4_handle_fragmentation(struct __ctx_buff *ctx,
 	};
 
 	is_fragment = ipv4_is_fragment(ip4);
-	dir = ct_to_metrics_dir(ct_dir);
 
 	if (unlikely(is_fragment)) {
-		update_metrics(ctx_full_len(ctx), dir, REASON_FRAG_PACKET);
-
 		not_first_fragment = ipv4_is_not_first_fragment(ip4);
 		if (has_l4_header)
 			*has_l4_header = !not_first_fragment;
@@ -156,16 +157,17 @@ ipv4_handle_fragmentation(struct __ctx_buff *ctx,
 	}
 
 	/* load sport + dport into tuple */
-	ret = ctx_load_bytes(ctx, l4_off, ports, 4);
+	ret = l4_load_ports(ctx, l4_off, (__be16 *)ports);
 	if (ret < 0)
-		return ret;
+		return DROP_CT_INVALID_HDR;
 
 	if (unlikely(is_fragment)) {
 		/* First logical fragment for this datagram (not necessarily the first
 		 * we receive). Fragment has L4 header, create an entry in datagrams map.
 		 */
 		if (map_update_elem(&IPV4_FRAG_DATAGRAMS_MAP, &frag_id, ports, BPF_ANY))
-			update_metrics(ctx_full_len(ctx), dir, REASON_FRAG_PACKET_UPDATE);
+			update_metrics(ctx_full_len(ctx), ct_to_metrics_dir(ct_dir),
+				       REASON_FRAG_PACKET_UPDATE);
 
 		/* Do not return an error if map update failed, as nothing prevents us
 		 * to process the current packet normally.
@@ -176,4 +178,19 @@ ipv4_handle_fragmentation(struct __ctx_buff *ctx,
 }
 #endif
 
-#endif /* __LIB_IPV4__ */
+static __always_inline int
+ipv4_load_l4_ports(struct __ctx_buff *ctx, struct iphdr *ip4 __maybe_unused,
+		   int l4_off, enum ct_dir dir __maybe_unused,
+		   __be16 *ports, bool *has_l4_header __maybe_unused)
+{
+#ifdef ENABLE_IPV4_FRAGMENTS
+	return ipv4_handle_fragmentation(ctx, ip4, l4_off, dir,
+					 (struct ipv4_frag_l4ports *)ports,
+					 has_l4_header);
+#else
+	if (l4_load_ports(ctx, l4_off, ports) < 0)
+		return DROP_CT_INVALID_HDR;
+#endif
+
+	return CTX_ACT_OK;
+}

@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,35 +14,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cilium/hive/cell"
 	"github.com/sirupsen/logrus"
 	apiext_clientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
-	apiext_fake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	versionapi "k8s.io/apimachinery/pkg/version"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/connrotation"
+	mcsapi_clientset "sigs.k8s.io/mcs-api/pkg/client/clientset/versioned"
 
 	"github.com/cilium/cilium/pkg/controller"
-	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/hive/cell"
 	cilium_clientset "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned"
-	cilium_fake "github.com/cilium/cilium/pkg/k8s/client/clientset/versioned/fake"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
 	slim_apiextclientsetscheme "github.com/cilium/cilium/pkg/k8s/slim/k8s/apiextensions-client/clientset/versioned/scheme"
 	slim_apiext_clientset "github.com/cilium/cilium/pkg/k8s/slim/k8s/apiextensions-clientset"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	slim_metav1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1beta1"
 	slim_clientset "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned"
-	slim_fake "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/fake"
 	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
-	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/version"
 )
@@ -52,12 +49,28 @@ var Cell = cell.Module(
 	"k8s-client",
 	"Kubernetes Client",
 
-	cell.Config(defaultConfig),
+	cell.Config(defaultSharedConfig),
+	cell.Config(defaultClientParams),
+	cell.Provide(NewClientConfig),
 	cell.Provide(newClientset),
 )
 
+// client.ClientBuilderCell provides a function to create a new composite Clientset,
+// allowing a controller to use its own Clientset with a different user agent.
+var ClientBuilderCell = cell.Module(
+	"k8s-client-builder",
+	"Kubernetes Client Builder",
+
+	cell.Config(defaultSharedConfig),
+	cell.Provide(NewClientConfig),
+	cell.Provide(NewClientBuilder),
+)
+
+var k8sHeartbeatControllerGroup = controller.NewGroup("k8s-heartbeat")
+
 // Type aliases for the clientsets to avoid name collision on 'Clientset' when composing them.
 type (
+	MCSAPIClientset     = mcsapi_clientset.Clientset
 	KubernetesClientset = kubernetes.Clientset
 	SlimClientset       = slim_clientset.Clientset
 	APIExtClientset     = slim_apiext_clientset.Clientset
@@ -66,6 +79,7 @@ type (
 
 // Clientset is a composition of the different client sets used by Cilium.
 type Clientset interface {
+	mcsapi_clientset.Interface
 	kubernetes.Interface
 	apiext_clientset.Interface
 	cilium_clientset.Interface
@@ -96,6 +110,7 @@ type compositeClientset struct {
 	started  bool
 	disabled bool
 
+	*MCSAPIClientset
 	*KubernetesClientset
 	*APIExtClientset
 	*CiliumClientset
@@ -109,7 +124,11 @@ type compositeClientset struct {
 	restConfig    *rest.Config
 }
 
-func newClientset(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config) (Clientset, error) {
+func newClientset(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) (Clientset, error) {
+	return newClientsetForUserAgent(lc, log, cfg, "")
+}
+
+func newClientsetForUserAgent(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config, name string) (Clientset, error) {
 	if !cfg.isEnabled() {
 		return &compositeClientset{disabled: true}, nil
 	}
@@ -125,7 +144,17 @@ func newClientset(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config) (Client
 		config:     cfg,
 	}
 
-	restConfig, err := createConfig(cfg.K8sAPIServer, cfg.K8sKubeConfigPath, cfg.K8sClientQPS, cfg.K8sClientBurst)
+	cmdName := "cilium"
+	if len(os.Args[0]) != 0 {
+		cmdName = filepath.Base(os.Args[0])
+	}
+	userAgent := fmt.Sprintf("%s/%s", cmdName, version.Version)
+
+	if name != "" {
+		userAgent = fmt.Sprintf("%s %s", userAgent, name)
+	}
+
+	restConfig, err := createConfig(cfg.K8sAPIServer, cfg.K8sKubeConfigPath, cfg.K8sClientQPS, cfg.K8sClientBurst, userAgent)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create k8s client rest configuration: %w", err)
 	}
@@ -160,6 +189,11 @@ func newClientset(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config) (Client
 		return nil, fmt.Errorf("unable to create apiext k8s client: %w", err)
 	}
 
+	client.MCSAPIClientset, err = mcsapi_clientset.NewForConfigAndClient(restConfig, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create mcsapi k8s client: %w", err)
+	}
+
 	client.KubernetesClientset, err = kubernetes.NewForConfigAndClient(restConfig, httpClient)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create k8s client: %w", err)
@@ -174,7 +208,7 @@ func newClientset(lc hive.Lifecycle, log logrus.FieldLogger, cfg Config) (Client
 		return nil, fmt.Errorf("unable to create cilium k8s client: %w", err)
 	}
 
-	lc.Append(hive.Hook{
+	lc.Append(cell.Hook{
 		OnStart: client.onStart,
 		OnStop:  client.onStop,
 	})
@@ -209,7 +243,7 @@ func (c *compositeClientset) RestConfig() *rest.Config {
 	return rest.CopyConfig(c.restConfig)
 }
 
-func (c *compositeClientset) onStart(startCtx hive.HookContext) error {
+func (c *compositeClientset) onStart(startCtx cell.HookContext) error {
 	if !c.IsEnabled() {
 		return nil
 	}
@@ -234,7 +268,7 @@ func (c *compositeClientset) onStart(startCtx hive.HookContext) error {
 	return nil
 }
 
-func (c *compositeClientset) onStop(stopCtx hive.HookContext) error {
+func (c *compositeClientset) onStop(stopCtx cell.HookContext) error {
 	if c.IsEnabled() {
 		c.controller.RemoveAllAndWait()
 		c.closeAllConns()
@@ -263,6 +297,7 @@ func (c *compositeClientset) startHeartbeat() {
 
 	c.controller.UpdateController("k8s-heartbeat",
 		controller.ControllerParams{
+			Group: k8sHeartbeatControllerGroup,
 			DoFunc: func(context.Context) error {
 				runHeartbeat(
 					c.log,
@@ -282,16 +317,11 @@ func (c *compositeClientset) startHeartbeat() {
 // 1. kubeCfgPath
 // 2. apiServerURL (https if specified)
 // 3. rest.InClusterConfig().
-func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*rest.Config, error) {
+func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int, userAgent string) (*rest.Config, error) {
 	var (
 		config *rest.Config
 		err    error
 	)
-	cmdName := "cilium"
-	if len(os.Args[0]) != 0 {
-		cmdName = filepath.Base(os.Args[0])
-	}
-	userAgent := fmt.Sprintf("%s/%s", cmdName, version.Version)
 
 	switch {
 	// If the apiServerURL and the kubeCfgPath are empty then we can try getting
@@ -310,6 +340,7 @@ func createConfig(apiServerURL, kubeCfgPath string, qps float32, burst int) (*re
 		}
 		config.Host = apiServerURL
 	default:
+		//exhaustruct:ignore
 		config = &rest.Config{Host: apiServerURL, UserAgent: userAgent}
 	}
 
@@ -359,12 +390,12 @@ func (c *compositeClientset) waitForConn(ctx context.Context) error {
 }
 
 func setDialer(cfg Config, restConfig *rest.Config) func() {
-	if cfg.K8sHeartbeatTimeout == 0 {
+	if cfg.K8sClientConnectionTimeout == 0 || cfg.K8sClientConnectionKeepAlive == 0 {
 		return func() {}
 	}
 	ctx := (&net.Dialer{
-		Timeout:   cfg.K8sHeartbeatTimeout,
-		KeepAlive: cfg.K8sHeartbeatTimeout,
+		Timeout:   cfg.K8sClientConnectionTimeout,
+		KeepAlive: cfg.K8sClientConnectionKeepAlive,
 	}).DialContext
 	dialer := connrotation.NewDialer(ctx)
 	restConfig.Dial = dialer.DialContext
@@ -389,13 +420,12 @@ func runHeartbeat(log logrus.FieldLogger, heartBeat func(context.Context) error,
 		// which means the server is overloaded and only for this reason we
 		// will not close all connections.
 		err := heartBeat(ctx)
-		switch t := err.(type) {
-		case *errors.StatusError:
-			if t.ErrStatus.Code != http.StatusTooManyRequests {
+		if err != nil {
+			statusError := &k8sErrors.StatusError{}
+			if !errors.As(err, &statusError) ||
+				statusError.ErrStatus.Code != http.StatusTooManyRequests {
 				done <- err
 			}
-		default:
-			done <- err
 		}
 		close(done)
 	}()
@@ -422,92 +452,24 @@ func isConnReady(c kubernetes.Interface) error {
 	return err
 }
 
-var FakeClientCell = cell.Provide(NewFakeClientset)
-
-type (
-	KubernetesFakeClientset = fake.Clientset
-	SlimFakeClientset       = slim_fake.Clientset
-	CiliumFakeClientset     = cilium_fake.Clientset
-	APIExtFakeClientset     = apiext_fake.Clientset
-)
-
-type FakeClientset struct {
-	disabled bool
-
-	*KubernetesFakeClientset
-	*CiliumFakeClientset
-	*APIExtFakeClientset
-	clientsetGetters
-
-	SlimFakeClientset *SlimFakeClientset
-
-	enabled bool
+func toVersionInfo(rawVersion string) *versionapi.Info {
+	parts := strings.Split(rawVersion, ".")
+	return &versionapi.Info{Major: parts[0], Minor: parts[1]}
 }
 
-var _ Clientset = &FakeClientset{}
+type ClientBuilderFunc func(name string) (Clientset, error)
 
-func (c *FakeClientset) Slim() slim_clientset.Interface {
-	return c.SlimFakeClientset
-}
-
-func (c *FakeClientset) Discovery() discovery.DiscoveryInterface {
-	return c.KubernetesFakeClientset.Discovery()
-}
-
-func (c *FakeClientset) IsEnabled() bool {
-	return !c.disabled
-}
-
-func (c *FakeClientset) Disable() {
-	c.disabled = true
-}
-
-func (c *FakeClientset) Config() Config {
-	return Config{}
-}
-
-func (c *FakeClientset) RestConfig() *rest.Config {
-	return &rest.Config{}
-}
-
-func NewFakeClientset() (*FakeClientset, Clientset) {
-	client := FakeClientset{
-		SlimFakeClientset:       slim_fake.NewSimpleClientset(),
-		CiliumFakeClientset:     cilium_fake.NewSimpleClientset(),
-		APIExtFakeClientset:     apiext_fake.NewSimpleClientset(),
-		KubernetesFakeClientset: fake.NewSimpleClientset(),
-		enabled:                 true,
-	}
-	client.clientsetGetters = clientsetGetters{&client}
-	return &client, &client
-}
-
-type standaloneLifecycle struct {
-	hooks []hive.HookInterface
-}
-
-func (s *standaloneLifecycle) Append(hook hive.HookInterface) {
-	s.hooks = append(s.hooks, hook)
-}
-
-// NewStandaloneClientset creates a clientset outside hive. To be removed once
-// remaining uses of k8s.Init()/k8s.Client()/etc. have been converted.
-func NewStandaloneClientset(cfg Config) (Clientset, error) {
-	log := logging.DefaultLogger
-	lc := &standaloneLifecycle{}
-
-	clientset, err := newClientset(lc, log, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, hook := range lc.hooks {
-		if err := hook.Start(context.Background()); err != nil {
+// NewClientBuilder returns a function that creates a new Clientset with the given
+// name appended to the user agent, or returns an error if the Clientset cannot be
+// created.
+func NewClientBuilder(lc cell.Lifecycle, log logrus.FieldLogger, cfg Config) ClientBuilderFunc {
+	return func(name string) (Clientset, error) {
+		c, err := newClientsetForUserAgent(lc, log, cfg, name)
+		if err != nil {
 			return nil, err
 		}
+		return c, nil
 	}
-
-	return clientset, err
 }
 
 func init() {

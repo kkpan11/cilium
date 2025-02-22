@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 
 	"github.com/cilium/lumberjack/v2"
 	"github.com/sirupsen/logrus"
@@ -20,8 +19,6 @@ import (
 var (
 	log       = logging.DefaultLogger.WithField(logfields.LogSubsys, subsystem)
 	policyLog = logrus.New()
-
-	policyLogOnce sync.Once
 )
 
 const (
@@ -45,7 +42,11 @@ func (e *Endpoint) getPolicyLogger() *logrus.Entry {
 // PolicyDebug logs the 'msg' with 'fields' if policy debug logging is enabled.
 func (e *Endpoint) PolicyDebug(fields logrus.Fields, msg string) {
 	if dbgLog := e.getPolicyLogger(); dbgLog != nil {
-		dbgLog.WithFields(fields).Debug(msg)
+		if fields == nil {
+			dbgLog.Debug(msg)
+		} else {
+			dbgLog.WithFields(fields).Debug(msg)
+		}
 	}
 }
 
@@ -66,7 +67,7 @@ func (e *Endpoint) Logger(subsystem string) *logrus.Entry {
 //
 // Note: You must hold Endpoint.mutex.Lock() to synchronize logger pointer
 // updates if the endpoint is already exposed. Callers that create new
-// endopoints do not need locks to call this.
+// endpoints do not need locks to call this.
 func (e *Endpoint) UpdateLogger(fields map[string]interface{}) {
 	e.updatePolicyLogger(fields)
 	epLogger := e.logger.Load()
@@ -91,37 +92,36 @@ func (e *Endpoint) UpdateLogger(fields map[string]interface{}) {
 		return
 	}
 
-	// default to a new default logger
-	baseLogger := logging.InitializeDefaultLogger()
-
-	// If this endpoint is set to debug ensure it will print debug by giving it
-	// an independent logger
-	if e.Options != nil && e.Options.IsEnabled(option.Debug) {
-		baseLogger.SetLevel(logrus.DebugLevel)
-	} else {
-		// Debug mode takes priority; if not in debug, check what log level user
-		// has set and set the endpoint's log to log at that level.
-		baseLogger.SetLevel(logging.DefaultLogger.Level)
-	}
-
 	// When adding new fields, make sure they are abstracted by a setter
 	// and update the logger when the value is set.
-	l := baseLogger.WithFields(logrus.Fields{
+	f := logrus.Fields{
 		logfields.LogSubsys:              subsystem,
 		logfields.EndpointID:             e.ID,
-		logfields.ContainerID:            e.getShortContainerID(),
+		logfields.ContainerID:            e.GetShortContainerID(),
+		logfields.ContainerInterface:     e.containerIfName,
 		logfields.DatapathPolicyRevision: e.policyRevision,
 		logfields.DesiredPolicyRevision:  e.nextPolicyRevision,
 		logfields.IPv4:                   e.GetIPv4Address(),
 		logfields.IPv6:                   e.GetIPv6Address(),
-		logfields.K8sPodName:             e.getK8sNamespaceAndPodName(),
-	})
-
-	if e.SecurityIdentity != nil {
-		l = l.WithField(logfields.Identity, e.SecurityIdentity.ID.StringID())
+		logfields.K8sPodName:             e.GetK8sNamespaceAndPodName(),
+		logfields.CEPName:                e.GetK8sNamespaceAndCEPName(),
 	}
 
-	e.logger.Store(l)
+	if e.SecurityIdentity != nil {
+		f[logfields.Identity] = e.SecurityIdentity.ID.StringID()
+	}
+
+	// Inherit properties from default logger.
+	baseLogger := logging.DefaultLogger.WithFields(f)
+
+	// If this endpoint is set to debug ensure it will print debug by giving it
+	// an independent logger.
+	// If this endpoint is not set to debug, it will use the log level set by the user.
+	if e.Options != nil && e.Options.IsEnabled(option.Debug) {
+		baseLogger.Logger.SetLevel(logrus.DebugLevel)
+	}
+
+	e.logger.Store(baseLogger)
 }
 
 // Only to be called from UpdateLogger() above
@@ -129,30 +129,30 @@ func (e *Endpoint) updatePolicyLogger(fields map[string]interface{}) {
 	policyLogger := e.policyLogger.Load()
 	// e.Options check needed for unit testing.
 	if policyLogger == nil && e.Options != nil && e.Options.IsEnabled(option.DebugPolicy) {
-		policyLogOnce.Do(func() {
-			maxSize := 10 // 10 MB
-			if ms := os.Getenv("CILIUM_DBG_POLICY_LOG_MAX_SIZE"); ms != "" {
-				if ms, err := strconv.Atoi(ms); err == nil {
-					maxSize = ms
-				}
+		maxSize := 10 // 10 MB
+		if ms := os.Getenv("CILIUM_DBG_POLICY_LOG_MAX_SIZE"); ms != "" {
+			if ms, err := strconv.Atoi(ms); err == nil {
+				maxSize = ms
 			}
-			maxBackups := 3
-			if mb := os.Getenv("CILIUM_DBG_POLICY_LOG_MAX_BACKUPS"); mb != "" {
-				if mb, err := strconv.Atoi(mb); err == nil {
-					maxBackups = mb
-				}
+		}
+		maxBackups := 3
+		if mb := os.Getenv("CILIUM_DBG_POLICY_LOG_MAX_BACKUPS"); mb != "" {
+			if mb, err := strconv.Atoi(mb); err == nil {
+				maxBackups = mb
 			}
-			lumberjackLogger := &lumberjack.Logger{
-				Filename:   filepath.Join(option.Config.StateDir, "endpoint-policy.log"),
-				MaxSize:    maxSize,
-				MaxBackups: maxBackups,
-				MaxAge:     28, // days
-				LocalTime:  true,
-				Compress:   true,
-			}
-			policyLog.SetOutput(lumberjackLogger)
-			policyLog.SetLevel(logrus.DebugLevel)
-		})
+		}
+		lumberjackLogger := &lumberjack.Logger{
+			Filename:   filepath.Join(option.Config.StateDir, "endpoint-policy.log"),
+			MaxSize:    maxSize,
+			MaxBackups: maxBackups,
+			MaxAge:     28, // days
+			LocalTime:  true,
+			Compress:   true,
+		}
+		policyLog.SetOutput(lumberjackLogger)
+		policyLog.SetLevel(logrus.DebugLevel)
+		policyLog.SetFormatter(logging.GetFormatter(logging.DefaultLogFormatTimestamp))
+
 		policyLogger = logrus.NewEntry(policyLog)
 	}
 	if policyLogger == nil || e.Options == nil {
@@ -164,20 +164,22 @@ func (e *Endpoint) updatePolicyLogger(fields map[string]interface{}) {
 	} else if fields != nil {
 		policyLogger = policyLogger.WithFields(fields)
 	} else {
-		policyLogger = policyLogger.WithFields(logrus.Fields{
+		f := logrus.Fields{
 			logfields.LogSubsys:              subsystem,
 			logfields.EndpointID:             e.ID,
-			logfields.ContainerID:            e.getShortContainerID(),
+			logfields.ContainerID:            e.GetShortContainerID(),
 			logfields.DatapathPolicyRevision: e.policyRevision,
 			logfields.DesiredPolicyRevision:  e.nextPolicyRevision,
 			logfields.IPv4:                   e.GetIPv4Address(),
 			logfields.IPv6:                   e.GetIPv6Address(),
-			logfields.K8sPodName:             e.getK8sNamespaceAndPodName(),
-		})
+			logfields.K8sPodName:             e.GetK8sNamespaceAndPodName(),
+		}
 
 		if e.SecurityIdentity != nil {
-			policyLogger = policyLogger.WithField(logfields.Identity, e.SecurityIdentity.ID.StringID())
+			f[logfields.Identity] = e.SecurityIdentity.ID
 		}
+
+		policyLogger = policyLogger.WithFields(f)
 	}
 	e.policyLogger.Store(policyLogger)
 }
