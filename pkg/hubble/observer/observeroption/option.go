@@ -14,18 +14,7 @@ import (
 	"github.com/cilium/cilium/pkg/hubble/container"
 	"github.com/cilium/cilium/pkg/hubble/filters"
 	observerTypes "github.com/cilium/cilium/pkg/hubble/observer/types"
-	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 )
-
-// CiliumDaemon is a reference to the Cilium's Daemon when running inside Cilium
-type CiliumDaemon interface {
-	DebugEnabled() bool
-	// CiliumDaemon implements the StoreGetter interface that exposes cached stores
-	// of various k8s resources.
-	// WARNING: Access to the stores are meant to be read-only. Do not modify the stores
-	// or any objects returned by the stores.
-	getters.StoreGetter
-}
 
 // Server gives access to the Hubble server
 type Server interface {
@@ -37,8 +26,6 @@ type Server interface {
 type Options struct {
 	MaxFlows      container.Capacity // max number of flows that can be stored in the ring buffer
 	MonitorBuffer int                // buffer size for monitor payload
-
-	CiliumDaemon CiliumDaemon // when running inside Cilium, contains a reference to the daemon
 
 	OnServerInit   []OnServerInit          // invoked when the hubble server is initialized
 	OnMonitorEvent []OnMonitorEvent        // invoked before an event is decoded
@@ -148,14 +135,6 @@ func WithMonitorBuffer(size int) Option {
 func WithMaxFlows(capacity container.Capacity) Option {
 	return func(o *Options) error {
 		o.MaxFlows = capacity
-		return nil
-	}
-}
-
-// WithCiliumDaemon provides access to the Cilium daemon via downcast
-func WithCiliumDaemon(daemon CiliumDaemon) Option {
-	return func(o *Options) error {
-		o.CiliumDaemon = daemon
 		return nil
 	}
 }

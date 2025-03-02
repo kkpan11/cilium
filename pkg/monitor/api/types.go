@@ -161,6 +161,8 @@ const (
 	TraceFromOverlay
 	TraceFromNetwork
 	TraceToNetwork
+	TraceFromCrypto
+	TraceToCrypto
 )
 
 // TraceObservationPoints is a map of all supported trace observation points
@@ -171,12 +173,14 @@ var TraceObservationPoints = map[uint8]string{
 	TraceToStack:     "to-stack",
 	TraceToOverlay:   "to-overlay",
 	TraceToNetwork:   "to-network",
+	TraceToCrypto:    "to-crypto",
 	TraceFromLxc:     "from-endpoint",
 	TraceFromProxy:   "from-proxy",
 	TraceFromHost:    "from-host",
 	TraceFromStack:   "from-stack",
 	TraceFromOverlay: "from-overlay",
 	TraceFromNetwork: "from-network",
+	TraceFromCrypto:  "from-crypto",
 }
 
 // TraceObservationPoint returns the name of a trace observation point
@@ -455,12 +459,11 @@ type ServiceUpsertNotificationAddr struct {
 type ServiceUpsertNotification struct {
 	ID uint32 `json:"id"`
 
-	Frontend ServiceUpsertNotificationAddr   `json:"frontend-address"`
-	Backends []ServiceUpsertNotificationAddr `json:"backend-addresses"`
+	Frontend           ServiceUpsertNotificationAddr   `json:"frontend-address"`
+	Backends           []ServiceUpsertNotificationAddr `json:"backend-addresses"`
+	NumBackendsOmitted int                             `json:"num-backends-omitted,omitempty"`
 
-	Type string `json:"type,omitempty"`
-	// Deprecated: superseded by ExtTrafficPolicy.
-	TrafficPolicy    string `json:"traffic-policy,omitempty"`
+	Type             string `json:"type,omitempty"`
 	ExtTrafficPolicy string `json:"ext-traffic-policy,omitempty"`
 	IntTrafficPolicy string `json:"int-traffic-policy,omitempty"`
 
@@ -473,18 +476,19 @@ func ServiceUpsertMessage(
 	id uint32,
 	frontend ServiceUpsertNotificationAddr,
 	backends []ServiceUpsertNotificationAddr,
+	numBackendsOmitted int,
 	svcType, svcExtTrafficPolicy, svcIntTrafficPolicy, svcName, svcNamespace string,
 ) AgentNotifyMessage {
 	notification := ServiceUpsertNotification{
-		ID:               id,
-		Frontend:         frontend,
-		Backends:         backends,
-		Type:             svcType,
-		TrafficPolicy:    svcExtTrafficPolicy,
-		ExtTrafficPolicy: svcExtTrafficPolicy,
-		IntTrafficPolicy: svcIntTrafficPolicy,
-		Name:             svcName,
-		Namespace:        svcNamespace,
+		ID:                 id,
+		Frontend:           frontend,
+		Backends:           backends,
+		NumBackendsOmitted: numBackendsOmitted,
+		Type:               svcType,
+		ExtTrafficPolicy:   svcExtTrafficPolicy,
+		IntTrafficPolicy:   svcIntTrafficPolicy,
+		Name:               svcName,
+		Namespace:          svcNamespace,
 	}
 
 	return AgentNotifyMessage{

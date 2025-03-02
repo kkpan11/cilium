@@ -4,8 +4,6 @@
 package policy
 
 import (
-	"fmt"
-
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	policyapi "github.com/cilium/cilium/pkg/policy/api"
 )
@@ -15,7 +13,7 @@ import (
 type ruleSlice []*rule
 
 func (rules ruleSlice) resolveL4IngressPolicy(policyCtx PolicyContext, ctx *SearchContext) (L4PolicyMap, error) {
-	result := L4PolicyMap{}
+	result := NewL4PolicyMap()
 
 	ctx.PolicyTrace("\n")
 	ctx.PolicyTrace("Resolving ingress policy for %+v\n", ctx.To)
@@ -65,7 +63,7 @@ func (rules ruleSlice) resolveL4IngressPolicy(policyCtx PolicyContext, ctx *Sear
 }
 
 func (rules ruleSlice) resolveL4EgressPolicy(policyCtx PolicyContext, ctx *SearchContext) (L4PolicyMap, error) {
-	result := L4PolicyMap{}
+	result := NewL4PolicyMap()
 
 	ctx.PolicyTrace("\n")
 	ctx.PolicyTrace("Resolving egress policy for %+v\n", ctx.From)
@@ -113,41 +111,6 @@ func (rules ruleSlice) resolveL4EgressPolicy(policyCtx PolicyContext, ctx *Searc
 	ctx.rulesSelect = oldRulesSelect
 
 	return result, nil
-}
-
-// updateEndpointsCaches iterates over a given list of rules to update the cache
-// within the rule which determines whether or not the given identity is
-// selected by that rule. If a rule in the list does select said identity, it is
-// added to epSet. Note that epSet can be shared across goroutines!
-// Returns whether the endpoint was selected by one of the rules, or if the
-// endpoint is nil.
-func (rules ruleSlice) updateEndpointsCaches(ep Endpoint) (bool, error) {
-	if ep == nil {
-		return false, fmt.Errorf("cannot update caches in rules because endpoint is nil")
-	}
-	id := ep.GetID16()
-	securityIdentity, err := ep.GetSecurityIdentity()
-	if err != nil {
-		return false, fmt.Errorf("cannot update caches in rules for endpoint %d because it is being deleted: %s", id, err)
-	}
-
-	if securityIdentity == nil {
-		return false, fmt.Errorf("cannot update caches in rules for endpoint %d because it has a nil identity", id)
-	}
-	endpointSelected := false
-	for _, r := range rules {
-		// NodeSelector can only match nodes, EndpointSelector only pods.
-		if (r.NodeSelector.LabelSelector != nil) != ep.IsHost() {
-			continue
-		}
-		// Update the matches cache of each rule, and note if
-		// the ep is selected by any of them.
-		if ruleMatches := r.matches(securityIdentity); ruleMatches {
-			endpointSelected = true
-		}
-	}
-
-	return endpointSelected, nil
 }
 
 // AsPolicyRules return the internal policyapi.Rule objects as a policyapi.Rules object

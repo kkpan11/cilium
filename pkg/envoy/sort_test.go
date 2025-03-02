@@ -4,18 +4,14 @@
 package envoy
 
 import (
+	"testing"
+
 	cilium "github.com/cilium/proxy/go/cilium/api"
 	envoy_config_core "github.com/cilium/proxy/go/envoy/config/core/v3"
 	envoy_config_route "github.com/cilium/proxy/go/envoy/config/route/v3"
 	envoy_type_matcher "github.com/cilium/proxy/go/envoy/type/matcher/v3"
-	. "gopkg.in/check.v1"
-
-	"github.com/cilium/cilium/pkg/checker"
+	"github.com/stretchr/testify/require"
 )
-
-type SortSuite struct{}
-
-var _ = Suite(&SortSuite{})
 
 var HeaderMatcher1 = &envoy_config_route.HeaderMatcher{
 	Name: "aaa",
@@ -69,7 +65,7 @@ var HeaderMatcher4 = &envoy_config_route.HeaderMatcher{
 	},
 }
 
-func (s *SortSuite) TestSortHeaderMatchers(c *C) {
+func TestSortHeaderMatchers(t *testing.T) {
 	var slice, expected []*envoy_config_route.HeaderMatcher
 
 	slice = []*envoy_config_route.HeaderMatcher{
@@ -85,7 +81,7 @@ func (s *SortSuite) TestSortHeaderMatchers(c *C) {
 		HeaderMatcher4,
 	}
 	SortHeaderMatchers(slice)
-	c.Assert(slice, checker.DeepEquals, expected)
+	require.EqualValues(t, expected, slice)
 }
 
 var HTTPNetworkPolicyRule1 = &cilium.HttpNetworkPolicyRule{}
@@ -102,7 +98,7 @@ var HTTPNetworkPolicyRule4 = &cilium.HttpNetworkPolicyRule{
 	Headers: []*envoy_config_route.HeaderMatcher{HeaderMatcher1, HeaderMatcher3},
 }
 
-func (s *SortSuite) TestSortHttpNetworkPolicyRules(c *C) {
+func TestSortHttpNetworkPolicyRules(t *testing.T) {
 	var slice, expected []*cilium.HttpNetworkPolicyRule
 
 	slice = []*cilium.HttpNetworkPolicyRule{
@@ -118,7 +114,7 @@ func (s *SortSuite) TestSortHttpNetworkPolicyRules(c *C) {
 		HTTPNetworkPolicyRule4,
 	}
 	SortHTTPNetworkPolicyRules(slice)
-	c.Assert(slice, checker.DeepEquals, expected)
+	require.EqualValues(t, expected, slice)
 }
 
 var PortNetworkPolicyRule1 = &cilium.PortNetworkPolicyRule{
@@ -127,12 +123,12 @@ var PortNetworkPolicyRule1 = &cilium.PortNetworkPolicyRule{
 }
 
 var PortNetworkPolicyRule2 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1},
+	RemotePolicies: []uint32{1},
 	L7:             nil,
 }
 
 var PortNetworkPolicyRule3 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1, 2},
+	RemotePolicies: []uint32{1, 2},
 	L7:             nil,
 }
 
@@ -148,7 +144,7 @@ var PortNetworkPolicyRule4 = &cilium.PortNetworkPolicyRule{
 }
 
 var PortNetworkPolicyRule5 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1, 2},
+	RemotePolicies: []uint32{1, 2},
 	L7: &cilium.PortNetworkPolicyRule_HttpRules{
 		HttpRules: &cilium.HttpNetworkPolicyRules{
 			HttpRules: []*cilium.HttpNetworkPolicyRule{
@@ -159,7 +155,7 @@ var PortNetworkPolicyRule5 = &cilium.PortNetworkPolicyRule{
 }
 
 var PortNetworkPolicyRule6 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1, 2},
+	RemotePolicies: []uint32{1, 2},
 	L7: &cilium.PortNetworkPolicyRule_HttpRules{
 		HttpRules: &cilium.HttpNetworkPolicyRules{
 			HttpRules: []*cilium.HttpNetworkPolicyRule{
@@ -171,7 +167,7 @@ var PortNetworkPolicyRule6 = &cilium.PortNetworkPolicyRule{
 }
 
 var PortNetworkPolicyRule7 = &cilium.PortNetworkPolicyRule{
-	RemotePolicies: []uint64{1, 2},
+	RemotePolicies: []uint32{1, 2},
 	L7: &cilium.PortNetworkPolicyRule_HttpRules{
 		HttpRules: &cilium.HttpNetworkPolicyRules{
 			HttpRules: []*cilium.HttpNetworkPolicyRule{
@@ -184,7 +180,7 @@ var PortNetworkPolicyRule7 = &cilium.PortNetworkPolicyRule{
 
 // TODO: Test sorting Kafka rules.
 
-func (s *SortSuite) TestSortPortNetworkPolicyRules(c *C) {
+func TestSortPortNetworkPolicyRules(t *testing.T) {
 	var slice, expected []*cilium.PortNetworkPolicyRule
 
 	slice = []*cilium.PortNetworkPolicyRule{
@@ -206,7 +202,7 @@ func (s *SortSuite) TestSortPortNetworkPolicyRules(c *C) {
 		PortNetworkPolicyRule7,
 	}
 	SortPortNetworkPolicyRules(slice)
-	c.Assert(slice, checker.DeepEquals, expected)
+	require.EqualValues(t, expected, slice)
 }
 
 var PortNetworkPolicy1 = &cilium.PortNetworkPolicy{
@@ -253,7 +249,7 @@ var PortNetworkPolicy6 = &cilium.PortNetworkPolicy{
 	},
 }
 
-func (s *SortSuite) TestSortPortNetworkPolicies(c *C) {
+func TestSortPortNetworkPolicies(t *testing.T) {
 	var slice, expected []*cilium.PortNetworkPolicy
 
 	slice = []*cilium.PortNetworkPolicy{
@@ -273,5 +269,5 @@ func (s *SortSuite) TestSortPortNetworkPolicies(c *C) {
 		PortNetworkPolicy6,
 	}
 	SortPortNetworkPolicies(slice)
-	c.Assert(slice, checker.DeepEquals, expected)
+	require.EqualValues(t, expected, slice)
 }

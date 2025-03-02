@@ -26,7 +26,6 @@ import (
 	"github.com/cilium/cilium/api/v1/server/restapi/daemon"
 	"github.com/cilium/cilium/api/v1/server/restapi/endpoint"
 	"github.com/cilium/cilium/api/v1/server/restapi/ipam"
-	"github.com/cilium/cilium/api/v1/server/restapi/metrics"
 	"github.com/cilium/cilium/api/v1/server/restapi/policy"
 	"github.com/cilium/cilium/api/v1/server/restapi/prefilter"
 	"github.com/cilium/cilium/api/v1/server/restapi/recorder"
@@ -55,6 +54,9 @@ func NewCiliumAPIAPI(spec *loads.Document) *CiliumAPIAPI {
 
 		JSONProducer: runtime.JSONProducer(),
 
+		EndpointDeleteEndpointHandler: endpoint.DeleteEndpointHandlerFunc(func(params endpoint.DeleteEndpointParams) middleware.Responder {
+			return middleware.NotImplemented("operation endpoint.DeleteEndpoint has not yet been implemented")
+		}),
 		EndpointDeleteEndpointIDHandler: endpoint.DeleteEndpointIDHandlerFunc(func(params endpoint.DeleteEndpointIDParams) middleware.Responder {
 			return middleware.NotImplemented("operation endpoint.DeleteEndpointID has not yet been implemented")
 		}),
@@ -78,6 +80,12 @@ func NewCiliumAPIAPI(spec *loads.Document) *CiliumAPIAPI {
 		}),
 		BgpGetBgpPeersHandler: bgp.GetBgpPeersHandlerFunc(func(params bgp.GetBgpPeersParams) middleware.Responder {
 			return middleware.NotImplemented("operation bgp.GetBgpPeers has not yet been implemented")
+		}),
+		BgpGetBgpRoutePoliciesHandler: bgp.GetBgpRoutePoliciesHandlerFunc(func(params bgp.GetBgpRoutePoliciesParams) middleware.Responder {
+			return middleware.NotImplemented("operation bgp.GetBgpRoutePolicies has not yet been implemented")
+		}),
+		BgpGetBgpRoutesHandler: bgp.GetBgpRoutesHandlerFunc(func(params bgp.GetBgpRoutesParams) middleware.Responder {
+			return middleware.NotImplemented("operation bgp.GetBgpRoutes has not yet been implemented")
 		}),
 		DaemonGetCgroupDumpMetadataHandler: daemon.GetCgroupDumpMetadataHandlerFunc(func(params daemon.GetCgroupDumpMetadataParams) middleware.Responder {
 			return middleware.NotImplemented("operation daemon.GetCgroupDumpMetadata has not yet been implemented")
@@ -144,9 +152,6 @@ func NewCiliumAPIAPI(spec *loads.Document) *CiliumAPIAPI {
 		}),
 		DaemonGetMapNameEventsHandler: daemon.GetMapNameEventsHandlerFunc(func(params daemon.GetMapNameEventsParams) middleware.Responder {
 			return middleware.NotImplemented("operation daemon.GetMapNameEvents has not yet been implemented")
-		}),
-		MetricsGetMetricsHandler: metrics.GetMetricsHandlerFunc(func(params metrics.GetMetricsParams) middleware.Responder {
-			return middleware.NotImplemented("operation metrics.GetMetrics has not yet been implemented")
 		}),
 		DaemonGetNodeIdsHandler: daemon.GetNodeIdsHandlerFunc(func(params daemon.GetNodeIdsParams) middleware.Responder {
 			return middleware.NotImplemented("operation daemon.GetNodeIds has not yet been implemented")
@@ -244,6 +249,8 @@ type CiliumAPIAPI struct {
 	//   - application/json
 	JSONProducer runtime.Producer
 
+	// EndpointDeleteEndpointHandler sets the operation handler for the delete endpoint operation
+	EndpointDeleteEndpointHandler endpoint.DeleteEndpointHandler
 	// EndpointDeleteEndpointIDHandler sets the operation handler for the delete endpoint ID operation
 	EndpointDeleteEndpointIDHandler endpoint.DeleteEndpointIDHandler
 	// PolicyDeleteFqdnCacheHandler sets the operation handler for the delete fqdn cache operation
@@ -260,6 +267,10 @@ type CiliumAPIAPI struct {
 	ServiceDeleteServiceIDHandler service.DeleteServiceIDHandler
 	// BgpGetBgpPeersHandler sets the operation handler for the get bgp peers operation
 	BgpGetBgpPeersHandler bgp.GetBgpPeersHandler
+	// BgpGetBgpRoutePoliciesHandler sets the operation handler for the get bgp route policies operation
+	BgpGetBgpRoutePoliciesHandler bgp.GetBgpRoutePoliciesHandler
+	// BgpGetBgpRoutesHandler sets the operation handler for the get bgp routes operation
+	BgpGetBgpRoutesHandler bgp.GetBgpRoutesHandler
 	// DaemonGetCgroupDumpMetadataHandler sets the operation handler for the get cgroup dump metadata operation
 	DaemonGetCgroupDumpMetadataHandler daemon.GetCgroupDumpMetadataHandler
 	// DaemonGetClusterNodesHandler sets the operation handler for the get cluster nodes operation
@@ -304,8 +315,6 @@ type CiliumAPIAPI struct {
 	DaemonGetMapNameHandler daemon.GetMapNameHandler
 	// DaemonGetMapNameEventsHandler sets the operation handler for the get map name events operation
 	DaemonGetMapNameEventsHandler daemon.GetMapNameEventsHandler
-	// MetricsGetMetricsHandler sets the operation handler for the get metrics operation
-	MetricsGetMetricsHandler metrics.GetMetricsHandler
 	// DaemonGetNodeIdsHandler sets the operation handler for the get node ids operation
 	DaemonGetNodeIdsHandler daemon.GetNodeIdsHandler
 	// PolicyGetPolicyHandler sets the operation handler for the get policy operation
@@ -423,6 +432,9 @@ func (o *CiliumAPIAPI) Validate() error {
 		unregistered = append(unregistered, "JSONProducer")
 	}
 
+	if o.EndpointDeleteEndpointHandler == nil {
+		unregistered = append(unregistered, "endpoint.DeleteEndpointHandler")
+	}
 	if o.EndpointDeleteEndpointIDHandler == nil {
 		unregistered = append(unregistered, "endpoint.DeleteEndpointIDHandler")
 	}
@@ -446,6 +458,12 @@ func (o *CiliumAPIAPI) Validate() error {
 	}
 	if o.BgpGetBgpPeersHandler == nil {
 		unregistered = append(unregistered, "bgp.GetBgpPeersHandler")
+	}
+	if o.BgpGetBgpRoutePoliciesHandler == nil {
+		unregistered = append(unregistered, "bgp.GetBgpRoutePoliciesHandler")
+	}
+	if o.BgpGetBgpRoutesHandler == nil {
+		unregistered = append(unregistered, "bgp.GetBgpRoutesHandler")
 	}
 	if o.DaemonGetCgroupDumpMetadataHandler == nil {
 		unregistered = append(unregistered, "daemon.GetCgroupDumpMetadataHandler")
@@ -512,9 +530,6 @@ func (o *CiliumAPIAPI) Validate() error {
 	}
 	if o.DaemonGetMapNameEventsHandler == nil {
 		unregistered = append(unregistered, "daemon.GetMapNameEventsHandler")
-	}
-	if o.MetricsGetMetricsHandler == nil {
-		unregistered = append(unregistered, "metrics.GetMetricsHandler")
 	}
 	if o.DaemonGetNodeIdsHandler == nil {
 		unregistered = append(unregistered, "daemon.GetNodeIdsHandler")
@@ -667,6 +682,10 @@ func (o *CiliumAPIAPI) initHandlerCache() {
 	if o.handlers["DELETE"] == nil {
 		o.handlers["DELETE"] = make(map[string]http.Handler)
 	}
+	o.handlers["DELETE"]["/endpoint"] = endpoint.NewDeleteEndpoint(o.context, o.EndpointDeleteEndpointHandler)
+	if o.handlers["DELETE"] == nil {
+		o.handlers["DELETE"] = make(map[string]http.Handler)
+	}
 	o.handlers["DELETE"]["/endpoint/{id}"] = endpoint.NewDeleteEndpointID(o.context, o.EndpointDeleteEndpointIDHandler)
 	if o.handlers["DELETE"] == nil {
 		o.handlers["DELETE"] = make(map[string]http.Handler)
@@ -696,6 +715,14 @@ func (o *CiliumAPIAPI) initHandlerCache() {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
 	o.handlers["GET"]["/bgp/peers"] = bgp.NewGetBgpPeers(o.context, o.BgpGetBgpPeersHandler)
+	if o.handlers["GET"] == nil {
+		o.handlers["GET"] = make(map[string]http.Handler)
+	}
+	o.handlers["GET"]["/bgp/route-policies"] = bgp.NewGetBgpRoutePolicies(o.context, o.BgpGetBgpRoutePoliciesHandler)
+	if o.handlers["GET"] == nil {
+		o.handlers["GET"] = make(map[string]http.Handler)
+	}
+	o.handlers["GET"]["/bgp/routes"] = bgp.NewGetBgpRoutes(o.context, o.BgpGetBgpRoutesHandler)
 	if o.handlers["GET"] == nil {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
@@ -784,10 +811,6 @@ func (o *CiliumAPIAPI) initHandlerCache() {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
 	o.handlers["GET"]["/map/{name}/events"] = daemon.NewGetMapNameEvents(o.context, o.DaemonGetMapNameEventsHandler)
-	if o.handlers["GET"] == nil {
-		o.handlers["GET"] = make(map[string]http.Handler)
-	}
-	o.handlers["GET"]["/metrics"] = metrics.NewGetMetrics(o.context, o.MetricsGetMetricsHandler)
 	if o.handlers["GET"] == nil {
 		o.handlers["GET"] = make(map[string]http.Handler)
 	}
@@ -909,6 +932,6 @@ func (o *CiliumAPIAPI) AddMiddlewareFor(method, path string, builder middleware.
 	}
 	o.Init()
 	if h, ok := o.handlers[um][path]; ok {
-		o.handlers[method][path] = builder(h)
+		o.handlers[um][path] = builder(h)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/revert"
 )
 
@@ -54,6 +55,7 @@ func ParseExternalRegenerationMetadata(ctx context.Context, c context.CancelFunc
 // datapathRegenerationContext contains information related to regenerating the
 // datapath (BPF, proxy, etc.).
 type datapathRegenerationContext struct {
+	policyResult       *policyGenerateResult
 	bpfHeaderfilesHash string
 	epInfoCache        *epInfoCache
 	proxyWaitGroup     *completion.WaitGroup
@@ -63,6 +65,9 @@ type datapathRegenerationContext struct {
 	currentDir         string
 	nextDir            string
 	regenerationLevel  regeneration.DatapathRegenerationLevel
+
+	policyMapSyncDone bool
+	policyMapDump     policy.MapStateMap
 
 	finalizeList revert.FinalizeList
 	revertStack  revert.RevertStack

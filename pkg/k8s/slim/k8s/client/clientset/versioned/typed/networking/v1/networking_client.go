@@ -6,31 +6,21 @@
 package v1
 
 import (
-	"net/http"
+	http "net/http"
 
-	v1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
-	"github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/scheme"
+	networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
+	scheme "github.com/cilium/cilium/pkg/k8s/slim/k8s/client/clientset/versioned/scheme"
 	rest "k8s.io/client-go/rest"
 )
 
 type NetworkingV1Interface interface {
 	RESTClient() rest.Interface
-	IngressesGetter
-	IngressClassesGetter
 	NetworkPoliciesGetter
 }
 
 // NetworkingV1Client is used to interact with features provided by the networking.k8s.io group.
 type NetworkingV1Client struct {
 	restClient rest.Interface
-}
-
-func (c *NetworkingV1Client) Ingresses(namespace string) IngressInterface {
-	return newIngresses(c, namespace)
-}
-
-func (c *NetworkingV1Client) IngressClasses() IngressClassInterface {
-	return newIngressClasses(c)
 }
 
 func (c *NetworkingV1Client) NetworkPolicies(namespace string) NetworkPolicyInterface {
@@ -82,10 +72,10 @@ func New(c rest.Interface) *NetworkingV1Client {
 }
 
 func setConfigDefaults(config *rest.Config) error {
-	gv := v1.SchemeGroupVersion
+	gv := networkingv1.SchemeGroupVersion
 	config.GroupVersion = &gv
 	config.APIPath = "/apis"
-	config.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
+	config.NegotiatedSerializer = rest.CodecFactoryForGeneratedClient(scheme.Scheme, scheme.Codecs).WithoutConversion()
 
 	if config.UserAgent == "" {
 		config.UserAgent = rest.DefaultKubernetesUserAgent()

@@ -16,7 +16,7 @@ import (
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	"github.com/cilium/cilium/pkg/byteorder"
-	v1 "github.com/cilium/cilium/pkg/hubble/api/v1"
+	"github.com/cilium/cilium/pkg/hubble/parser/getters"
 	"github.com/cilium/cilium/pkg/hubble/testutils"
 	"github.com/cilium/cilium/pkg/monitor"
 	monitorAPI "github.com/cilium/cilium/pkg/monitor/api"
@@ -39,13 +39,21 @@ func encodeDebugEvent(msg *monitor.DebugMsg) []byte {
 
 func TestDecodeDebugEvent(t *testing.T) {
 	endpointGetter := &testutils.FakeEndpointGetter{
-		OnGetEndpointInfoByID: func(id uint16) (endpoint v1.EndpointInfo, ok bool) {
+		OnGetEndpointInfoByID: func(id uint16) (endpoint getters.EndpointInfo, ok bool) {
 			if id == 1234 {
 				return &testutils.FakeEndpointInfo{
 					ID:           1234,
 					Identity:     5678,
-					PodName:      "somepod",
-					PodNamespace: "default",
+					PodName:      "hubble-ui",
+					PodNamespace: "kube-system",
+					Labels: []string{
+						"k8s:io.cilium.k8s.policy.cluster=default",
+						"k8s:io.kubernetes.pod.namespace=kube-system",
+						"k8s:io.cilium.k8s.namespace.labels.kubernetes.io/metadata.name=kube-system",
+						"k8s:k8s-app=hubble-ui",
+						"k8s:app.kubernetes.io/name=hubble-ui",
+						"k8s:app.kubernetes.io/part-of=cilium",
+					},
 				}, true
 			}
 			return nil, false
@@ -96,10 +104,19 @@ func TestDecodeDebugEvent(t *testing.T) {
 			ev: &flowpb.DebugEvent{
 				Type: flowpb.DebugEventType_DBG_IP_ID_MAP_SUCCEED4,
 				Source: &flowpb.Endpoint{
-					ID:        1234,
-					Identity:  5678,
-					PodName:   "somepod",
-					Namespace: "default",
+					ID:          1234,
+					Identity:    5678,
+					PodName:     "hubble-ui",
+					ClusterName: "default",
+					Namespace:   "kube-system",
+					Labels: []string{
+						"k8s:app.kubernetes.io/name=hubble-ui",
+						"k8s:app.kubernetes.io/part-of=cilium",
+						"k8s:io.cilium.k8s.namespace.labels.kubernetes.io/metadata.name=kube-system",
+						"k8s:io.cilium.k8s.policy.cluster=default",
+						"k8s:io.kubernetes.pod.namespace=kube-system",
+						"k8s:k8s-app=hubble-ui",
+					},
 				},
 				Hash:    wrapperspb.UInt32(705182630),
 				Arg1:    wrapperspb.UInt32(3909094154),
@@ -122,10 +139,19 @@ func TestDecodeDebugEvent(t *testing.T) {
 			ev: &flowpb.DebugEvent{
 				Type: flowpb.DebugEventType_DBG_ICMP6_HANDLE,
 				Source: &flowpb.Endpoint{
-					ID:        1234,
-					Identity:  5678,
-					PodName:   "somepod",
-					Namespace: "default",
+					ID:          1234,
+					Identity:    5678,
+					PodName:     "hubble-ui",
+					ClusterName: "default",
+					Namespace:   "kube-system",
+					Labels: []string{
+						"k8s:app.kubernetes.io/name=hubble-ui",
+						"k8s:app.kubernetes.io/part-of=cilium",
+						"k8s:io.cilium.k8s.namespace.labels.kubernetes.io/metadata.name=kube-system",
+						"k8s:io.cilium.k8s.policy.cluster=default",
+						"k8s:io.kubernetes.pod.namespace=kube-system",
+						"k8s:k8s-app=hubble-ui",
+					},
 				},
 				Hash:    wrapperspb.UInt32(0x9dd55684),
 				Arg1:    wrapperspb.UInt32(129),
@@ -176,7 +202,7 @@ func TestDecodeDebugEvent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ev, err := p.Decode(tc.data, tc.cpu)
 			if tc.wantErr {
-				assert.NotNil(t, err)
+				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tc.ev, ev)
