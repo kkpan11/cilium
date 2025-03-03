@@ -7,22 +7,23 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 
-	"github.com/cilium/ipam/cidrset"
-	"github.com/cilium/ipam/service/ipallocator"
+	ec2_types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
+	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"github.com/cilium/cilium/pkg/api/helpers"
+	"github.com/cilium/cilium/pkg/aws/ec2"
 	eniTypes "github.com/cilium/cilium/pkg/aws/eni/types"
 	"github.com/cilium/cilium/pkg/aws/types"
 	"github.com/cilium/cilium/pkg/ip"
+	"github.com/cilium/cilium/pkg/ipam/cidrset"
 	"github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/ipam/service/ipallocator"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	"github.com/cilium/cilium/pkg/lock"
-
-	"github.com/google/uuid"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/time/rate"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 // ENIMap is a map of ENI interfaced indexed by ENI ID
@@ -40,6 +41,7 @@ const (
 	AssignPrivateIpAddresses
 	UnassignPrivateIpAddresses
 	TagENI
+	AssociateEIP
 	MaxOperation
 )
 
@@ -51,6 +53,7 @@ type API struct {
 	subnets        map[string]*ipamTypes.Subnet
 	vpcs           map[string]*ipamTypes.VirtualNetwork
 	securityGroups map[string]*types.SecurityGroup
+	instanceTypes  []ec2_types.InstanceTypeInfo
 	errors         map[Operation]error
 	allocator      *ipallocator.Range
 	pdAllocator    *cidrset.CidrSet
@@ -68,10 +71,8 @@ func NewAPI(subnets []*ipamTypes.Subnet, vpcs []*ipamTypes.VirtualNetwork, secur
 	// Use 10.10.0.0/17 for IP allocations
 	cidrSet, _ := cidrset.NewCIDRSet(baseCidr, 17)
 	podCidr, _ := cidrSet.AllocateNext()
-	podCidrRange, err := ipallocator.NewCIDRRange(podCidr)
-	if err != nil {
-		panic(err)
-	}
+	podCidrRange := ipallocator.NewCIDRRange(podCidr)
+
 	// Use 10.10.128.0/17 for prefix allocations
 	pdCidr, _ := cidrSet.AllocateNext()
 	pdCidrRange, err := cidrset.NewCIDRSet(pdCidr, 28)
@@ -85,6 +86,7 @@ func NewAPI(subnets []*ipamTypes.Subnet, vpcs []*ipamTypes.VirtualNetwork, secur
 		subnets:        map[string]*ipamTypes.Subnet{},
 		vpcs:           map[string]*ipamTypes.VirtualNetwork{},
 		securityGroups: map[string]*types.SecurityGroup{},
+		instanceTypes:  []ec2_types.InstanceTypeInfo{},
 		allocator:      podCidrRange,
 		pdAllocator:    pdCidrRange,
 		errors:         map[Operation]error{},
@@ -132,6 +134,12 @@ func (e *API) UpdateENIs(enis map[string]ENIMap) {
 			e.enis[instanceID][eniID] = eni.DeepCopy()
 		}
 	}
+	e.mutex.Unlock()
+}
+
+func (e *API) UpdateInstanceTypes(instanceTypes []ec2_types.InstanceTypeInfo) {
+	e.mutex.Lock()
+	e.instanceTypes = instanceTypes
 	e.mutex.Unlock()
 }
 
@@ -234,7 +242,6 @@ func (e *API) CreateNetworkInterface(ctx context.Context, toAllocate int32, subn
 	subnet.AvailableAddresses -= numAddresses
 
 	e.unattached[eniID] = eni
-	log.Debugf(" ENI after initial creation %v", eni)
 	return eniID, eni.DeepCopy(), nil
 }
 
@@ -335,7 +342,7 @@ func (e *API) GetDetachedNetworkInterfaces(ctx context.Context, tags ipamTypes.T
 	return result, nil
 }
 
-func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addresses int32) error {
+func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addresses int32) ([]string, error) {
 	e.rateLimit()
 	e.delaySim.Delay(AssignPrivateIpAddresses)
 
@@ -343,18 +350,18 @@ func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addres
 	defer e.mutex.Unlock()
 
 	if err, ok := e.errors[AssignPrivateIpAddresses]; ok {
-		return err
+		return nil, err
 	}
 
 	for _, enis := range e.enis {
 		if eni, ok := enis[eniID]; ok {
 			subnet, ok := e.subnets[eni.Subnet.ID]
 			if !ok {
-				return fmt.Errorf("subnet %s not found", eni.Subnet.ID)
+				return nil, fmt.Errorf("subnet %s not found", eni.Subnet.ID)
 			}
 
 			if int(addresses) > subnet.AvailableAddresses {
-				return fmt.Errorf("subnet %s has not enough addresses available", eni.Subnet.ID)
+				return nil, fmt.Errorf("subnet %s has not enough addresses available", eni.Subnet.ID)
 			}
 
 			for i := int32(0); i < addresses; i++ {
@@ -365,10 +372,10 @@ func (e *API) AssignPrivateIpAddresses(ctx context.Context, eniID string, addres
 				eni.Addresses = append(eni.Addresses, ip.String())
 			}
 			subnet.AvailableAddresses -= int(addresses)
-			return nil
+			return eni.Addresses, nil
 		}
 	}
-	return fmt.Errorf("Unable to find ENI with ID %s", eniID)
+	return nil, fmt.Errorf("Unable to find ENI with ID %s", eniID)
 }
 
 func (e *API) UnassignPrivateIpAddresses(ctx context.Context, eniID string, addresses []string) error {
@@ -427,7 +434,10 @@ func assignPrefixToENI(e *API, eni *eniTypes.ENI, prefixes int32) error {
 	}
 
 	if int(prefixes)*option.ENIPDBlockSizeIPv4 > subnet.AvailableAddresses {
-		return fmt.Errorf("subnet %s has not enough addresses available", eni.Subnet.ID)
+		return &smithy.GenericAPIError{
+			Code:    ec2.InvalidParameterValueStr,
+			Message: ec2.SubnetFullErrMsgStr,
+		}
 	}
 
 	for i := int32(0); i < prefixes; i++ {
@@ -439,7 +449,7 @@ func assignPrefixToENI(e *API, eni *eniTypes.ENI, prefixes int32) error {
 
 		prefixStr := pfx.String()
 		eni.Prefixes = append(eni.Prefixes, prefixStr)
-		prefixIPs, err := ip.PrefixToIps(prefixStr)
+		prefixIPs, err := ip.PrefixToIps(prefixStr, 0)
 		if err != nil {
 			return fmt.Errorf("unable to convert prefix %s to ips", prefixStr)
 		}
@@ -487,7 +497,7 @@ func (e *API) UnassignENIPrefixes(ctx context.Context, eniID string, prefixes []
 			return fmt.Errorf("Invalid CIDR block %s", prefix)
 		}
 		e.pdAllocator.Release(ipNet)
-		ips, _ := ip.PrefixToIps(prefix)
+		ips, _ := ip.PrefixToIps(prefix, 0)
 		addresses = append(addresses, ips...)
 	}
 
@@ -525,6 +535,67 @@ func (e *API) UnassignENIPrefixes(ctx context.Context, eniID string, prefixes []
 		return nil
 	}
 	return fmt.Errorf("Unable to find ENI with ID %s", eniID)
+}
+
+func (e *API) GetInstance(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap, instanceID string) (*ipamTypes.Instance, error) {
+	instance := ipamTypes.Instance{}
+	instance.Interfaces = map[string]ipamTypes.InterfaceRevision{}
+
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+
+	for id, enis := range e.enis {
+		if id != instanceID {
+			continue
+		}
+		for ifaceID, eni := range enis {
+			if subnets != nil {
+				if subnet, ok := subnets[eni.Subnet.ID]; ok && subnet.CIDR != nil {
+					eni.Subnet.CIDR = subnet.CIDR.String()
+				}
+			}
+
+			if vpcs != nil {
+				if vpc, ok := vpcs[eni.VPC.ID]; ok {
+					eni.VPC.PrimaryCIDR = vpc.PrimaryCIDR
+					eni.VPC.CIDRs = vpc.CIDRs
+				}
+			}
+
+			eniRevision := ipamTypes.InterfaceRevision{Resource: eni.DeepCopy()}
+			instance.Interfaces[ifaceID] = eniRevision
+		}
+	}
+
+	return &instance, nil
+}
+
+func (e *API) AssociateEIP(ctx context.Context, instanceID string, eipTags ipamTypes.Tags) (string, error) {
+	e.rateLimit()
+	e.delaySim.Delay(AssociateEIP)
+
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if err, ok := e.errors[AssociateEIP]; ok {
+		return "", err
+	}
+
+	ipAddr := "192.0.2.254"
+
+	// Assign the EIP to the ENI 0 of the instance
+	for iid, enis := range e.enis {
+		if iid == instanceID {
+			for _, eni := range enis {
+				if eni.Number == 0 {
+					eni.PublicIP = ipAddr
+					return ipAddr, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("unable to find ENI 0 for instance %s", instanceID)
 }
 
 func (e *API) GetInstances(ctx context.Context, vpcs ipamTypes.VirtualNetworkMap, subnets ipamTypes.SubnetMap) (*ipamTypes.InstanceMap, error) {
@@ -615,4 +686,8 @@ func (e *API) GetSecurityGroups(ctx context.Context) (types.SecurityGroupMap, er
 		securityGroups[sg.ID] = sg.DeepCopy()
 	}
 	return securityGroups, nil
+}
+
+func (e *API) GetInstanceTypes(ctx context.Context) ([]ec2_types.InstanceTypeInfo, error) {
+	return e.instanceTypes, nil
 }

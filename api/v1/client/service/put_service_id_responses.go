@@ -9,6 +9,7 @@ package service
 // Editing this file might prove futile when you re-run the swagger generate command
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -38,6 +39,12 @@ func (o *PutServiceIDReader) ReadResponse(response runtime.ClientResponse, consu
 			return nil, err
 		}
 		return result, nil
+	case 403:
+		result := NewPutServiceIDForbidden()
+		if err := result.readResponse(response, consumer, o.formats); err != nil {
+			return nil, err
+		}
+		return nil, result
 	case 460:
 		result := NewPutServiceIDInvalidFrontend()
 		if err := result.readResponse(response, consumer, o.formats); err != nil {
@@ -63,7 +70,7 @@ func (o *PutServiceIDReader) ReadResponse(response runtime.ClientResponse, consu
 		}
 		return nil, result
 	default:
-		return nil, runtime.NewAPIError("response status code does not match any response statuses defined for this endpoint in the swagger spec", response, response.Code())
+		return nil, runtime.NewAPIError("[PUT /service/{id}] PutServiceID", response, response.Code())
 	}
 }
 
@@ -105,12 +112,17 @@ func (o *PutServiceIDOK) IsCode(code int) bool {
 	return code == 200
 }
 
+// Code gets the status code for the put service Id o k response
+func (o *PutServiceIDOK) Code() int {
+	return 200
+}
+
 func (o *PutServiceIDOK) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdOK ", 200)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdOK", 200)
 }
 
 func (o *PutServiceIDOK) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdOK ", 200)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdOK", 200)
 }
 
 func (o *PutServiceIDOK) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
@@ -156,15 +168,76 @@ func (o *PutServiceIDCreated) IsCode(code int) bool {
 	return code == 201
 }
 
+// Code gets the status code for the put service Id created response
+func (o *PutServiceIDCreated) Code() int {
+	return 201
+}
+
 func (o *PutServiceIDCreated) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdCreated ", 201)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdCreated", 201)
 }
 
 func (o *PutServiceIDCreated) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdCreated ", 201)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdCreated", 201)
 }
 
 func (o *PutServiceIDCreated) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
+
+	return nil
+}
+
+// NewPutServiceIDForbidden creates a PutServiceIDForbidden with default headers values
+func NewPutServiceIDForbidden() *PutServiceIDForbidden {
+	return &PutServiceIDForbidden{}
+}
+
+/*
+PutServiceIDForbidden describes a response with status code 403, with default header values.
+
+Forbidden
+*/
+type PutServiceIDForbidden struct {
+}
+
+// IsSuccess returns true when this put service Id forbidden response has a 2xx status code
+func (o *PutServiceIDForbidden) IsSuccess() bool {
+	return false
+}
+
+// IsRedirect returns true when this put service Id forbidden response has a 3xx status code
+func (o *PutServiceIDForbidden) IsRedirect() bool {
+	return false
+}
+
+// IsClientError returns true when this put service Id forbidden response has a 4xx status code
+func (o *PutServiceIDForbidden) IsClientError() bool {
+	return true
+}
+
+// IsServerError returns true when this put service Id forbidden response has a 5xx status code
+func (o *PutServiceIDForbidden) IsServerError() bool {
+	return false
+}
+
+// IsCode returns true when this put service Id forbidden response a status code equal to that given
+func (o *PutServiceIDForbidden) IsCode(code int) bool {
+	return code == 403
+}
+
+// Code gets the status code for the put service Id forbidden response
+func (o *PutServiceIDForbidden) Code() int {
+	return 403
+}
+
+func (o *PutServiceIDForbidden) Error() string {
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdForbidden", 403)
+}
+
+func (o *PutServiceIDForbidden) String() string {
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdForbidden", 403)
+}
+
+func (o *PutServiceIDForbidden) readResponse(response runtime.ClientResponse, consumer runtime.Consumer, formats strfmt.Registry) error {
 
 	return nil
 }
@@ -208,12 +281,19 @@ func (o *PutServiceIDInvalidFrontend) IsCode(code int) bool {
 	return code == 460
 }
 
+// Code gets the status code for the put service Id invalid frontend response
+func (o *PutServiceIDInvalidFrontend) Code() int {
+	return 460
+}
+
 func (o *PutServiceIDInvalidFrontend) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidFrontend  %+v", 460, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidFrontend %s", 460, payload)
 }
 
 func (o *PutServiceIDInvalidFrontend) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidFrontend  %+v", 460, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidFrontend %s", 460, payload)
 }
 
 func (o *PutServiceIDInvalidFrontend) GetPayload() models.Error {
@@ -269,12 +349,19 @@ func (o *PutServiceIDInvalidBackend) IsCode(code int) bool {
 	return code == 461
 }
 
+// Code gets the status code for the put service Id invalid backend response
+func (o *PutServiceIDInvalidBackend) Code() int {
+	return 461
+}
+
 func (o *PutServiceIDInvalidBackend) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidBackend  %+v", 461, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidBackend %s", 461, payload)
 }
 
 func (o *PutServiceIDInvalidBackend) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidBackend  %+v", 461, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdInvalidBackend %s", 461, payload)
 }
 
 func (o *PutServiceIDInvalidBackend) GetPayload() models.Error {
@@ -330,12 +417,19 @@ func (o *PutServiceIDFailure) IsCode(code int) bool {
 	return code == 500
 }
 
+// Code gets the status code for the put service Id failure response
+func (o *PutServiceIDFailure) Code() int {
+	return 500
+}
+
 func (o *PutServiceIDFailure) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdFailure  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdFailure %s", 500, payload)
 }
 
 func (o *PutServiceIDFailure) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdFailure  %+v", 500, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdFailure %s", 500, payload)
 }
 
 func (o *PutServiceIDFailure) GetPayload() models.Error {
@@ -391,12 +485,19 @@ func (o *PutServiceIDUpdateBackendFailure) IsCode(code int) bool {
 	return code == 501
 }
 
+// Code gets the status code for the put service Id update backend failure response
+func (o *PutServiceIDUpdateBackendFailure) Code() int {
+	return 501
+}
+
 func (o *PutServiceIDUpdateBackendFailure) Error() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdUpdateBackendFailure  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdUpdateBackendFailure %s", 501, payload)
 }
 
 func (o *PutServiceIDUpdateBackendFailure) String() string {
-	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdUpdateBackendFailure  %+v", 501, o.Payload)
+	payload, _ := json.Marshal(o.Payload)
+	return fmt.Sprintf("[PUT /service/{id}][%d] putServiceIdUpdateBackendFailure %s", 501, payload)
 }
 
 func (o *PutServiceIDUpdateBackendFailure) GetPayload() models.Error {

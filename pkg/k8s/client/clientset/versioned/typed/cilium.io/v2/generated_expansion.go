@@ -15,8 +15,6 @@ type CiliumEndpointExpansion interface{}
 
 type CiliumEnvoyConfigExpansion interface{}
 
-type CiliumExternalWorkloadExpansion interface{}
-
 type CiliumIdentityExpansion interface{}
 
 type CiliumLocalRedirectPolicyExpansion interface{}
@@ -24,3 +22,5 @@ type CiliumLocalRedirectPolicyExpansion interface{}
 type CiliumNetworkPolicyExpansion interface{}
 
 type CiliumNodeExpansion interface{}
+
+type CiliumNodeConfigExpansion interface{}

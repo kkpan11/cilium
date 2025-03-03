@@ -14,9 +14,12 @@ import (
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/metrics"
 )
 
 type MapSpec = ciliumebpf.MapSpec
+
+type PinType = ciliumebpf.PinType
 
 const (
 	Hash       = ciliumebpf.Hash
@@ -24,7 +27,11 @@ const (
 	Array      = ciliumebpf.Array
 	HashOfMaps = ciliumebpf.HashOfMaps
 	LPMTrie    = ciliumebpf.LPMTrie
+	LRUHash    = ciliumebpf.LRUHash
+	LRUCPUHash = ciliumebpf.LRUCPUHash
+	RingBuf    = ciliumebpf.RingBuf
 
+	PinNone   = ciliumebpf.PinNone
 	PinByName = ciliumebpf.PinByName
 )
 
@@ -110,7 +117,7 @@ func (m *Map) OpenOrCreate() error {
 		PinPath: bpf.TCGlobalsPath(),
 	}
 
-	m.spec.Flags = m.spec.Flags | bpf.GetPreAllocateMapFlags(bpf.MapType(m.spec.Type))
+	m.spec.Flags |= bpf.GetPreAllocateMapFlags(m.spec.Type)
 
 	path := bpf.MapPath(m.spec.Name)
 
@@ -165,6 +172,7 @@ func (m *Map) OpenOrCreate() error {
 	m.path = path
 
 	registerMap(m)
+	metrics.UpdateMapCapacity(m.spec.Name, m.spec.MaxEntries)
 	return nil
 }
 
@@ -200,4 +208,11 @@ func (m *Map) GetModel() *models.BPFMap {
 	// TODO: handle map cache. See pkg/bpf/map_linux.go:GetModel()
 
 	return mapModel
+}
+
+func (m *Map) IsEmpty() bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	var key, value interface{}
+	return !m.Iterate().Next(key, value)
 }

@@ -11,16 +11,16 @@ func NewPointer(ptr unsafe.Pointer) Pointer {
 	return Pointer{ptr: ptr}
 }
 
-// NewSlicePointer creates a 64-bit pointer from a byte slice.
-func NewSlicePointer(buf []byte) Pointer {
+// NewSlicePointer creates a 64-bit pointer from a slice.
+func NewSlicePointer[T comparable](buf []T) Pointer {
 	if len(buf) == 0 {
 		return Pointer{}
 	}
 
-	return Pointer{ptr: unsafe.Pointer(&buf[0])}
+	return Pointer{ptr: unsafe.Pointer(unsafe.SliceData(buf))}
 }
 
-// NewSlicePointer creates a 64-bit pointer from a byte slice.
+// NewSlicePointerLen creates a 64-bit pointer from a byte slice.
 //
 // Useful to assign both the pointer and the length in one go.
 func NewSlicePointerLen(buf []byte) (Pointer, uint32) {

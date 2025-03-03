@@ -5,6 +5,7 @@ package mockmaps
 
 import (
 	"fmt"
+	"net"
 
 	"github.com/cilium/cilium/pkg/cidr"
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
@@ -12,6 +13,8 @@ import (
 	"github.com/cilium/cilium/pkg/ip"
 	lb "github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/maps/lbmap"
+	"github.com/cilium/cilium/pkg/u8proto"
 )
 
 type LBMockMap struct {
@@ -22,6 +25,8 @@ type LBMockMap struct {
 	SourceRanges           datapathTypes.SourceRangeSetByServiceID
 	DummyMaglevTable       map[uint16]int // svcID => backends count
 	SvcActiveBackendsCount map[uint16]int
+	SockRevNat4            map[lbmap.SockRevNat4Key]lbmap.SockRevNat4Value
+	SockRevNat6            map[lbmap.SockRevNat6Key]lbmap.SockRevNat6Value
 }
 
 func NewLBMockMap() *LBMockMap {
@@ -32,6 +37,8 @@ func NewLBMockMap() *LBMockMap {
 		SourceRanges:           datapathTypes.SourceRangeSetByServiceID{},
 		DummyMaglevTable:       map[uint16]int{},
 		SvcActiveBackendsCount: map[uint16]int{},
+		SockRevNat4:            map[lbmap.SockRevNat4Key]lbmap.SockRevNat4Value{},
+		SockRevNat6:            map[lbmap.SockRevNat6Key]lbmap.SockRevNat6Value{},
 	}
 }
 
@@ -59,7 +66,11 @@ func (m *LBMockMap) UpsertService(p *datapathTypes.UpsertServiceParams) error {
 	}
 	svc, found := m.ServiceByID[p.ID]
 	if !found {
-		frontend := lb.NewL3n4AddrID(lb.NONE, cmtypes.MustAddrClusterFromIP(p.IP), p.Port, p.Scope, lb.ID(p.ID))
+		u8p, err := u8proto.FromNumber(p.Protocol)
+		if err != nil {
+			return err
+		}
+		frontend := lb.NewL3n4AddrID(u8p.String(), cmtypes.MustAddrClusterFromIP(p.IP), p.Port, p.Scope, lb.ID(p.ID))
 		svc = &lb.SVC{Frontend: *frontend}
 	} else {
 		if p.PrevBackendsCount != len(svc.Backends) {
@@ -79,7 +90,15 @@ func (m *LBMockMap) UpsertService(p *datapathTypes.UpsertServiceParams) error {
 }
 
 func (m *LBMockMap) upsertMaglevLookupTable(svcID uint16, backends map[string]*lb.Backend, ipv6 bool) error {
-	m.DummyMaglevTable[svcID] = len(backends)
+	// Dummy table does not support weights, only store
+	// active counter right now.
+	active := 0
+	for _, b := range backends {
+		if b.State == lb.BackendStateActive {
+			active++
+		}
+	}
+	m.DummyMaglevTable[svcID] = active
 	return nil
 }
 
@@ -122,7 +141,7 @@ func (m *LBMockMap) AddBackend(b *lb.Backend, ipv6 bool) error {
 		return fmt.Errorf("Backend %d already exists", id)
 	}
 
-	be := lb.NewBackendWithState(id, b.Protocol, b.AddrCluster, port, b.State)
+	be := lb.NewBackendWithState(id, b.Protocol, b.AddrCluster, port, b.ZoneID, b.State)
 	m.BackendByID[id] = be
 
 	return nil
@@ -137,7 +156,7 @@ func (m *LBMockMap) UpdateBackendWithState(b *lb.Backend) error {
 	if !found {
 		return fmt.Errorf("update failed : backend %d doesn't exist", id)
 	}
-	if b.ID != be.ID || b.Port != be.Port || !b.AddrCluster.Equal(be.AddrCluster) {
+	if b.ID != be.ID || b.Port != be.Port || b.Protocol != be.Protocol || !b.AddrCluster.Equal(be.AddrCluster) {
 		return fmt.Errorf("backend in the map  %+v doesn't match %+v: only backend"+
 			"state can be updated", be.String(), b.String())
 	}
@@ -237,4 +256,20 @@ func (m *LBMockMap) UpdateSourceRanges(revNATID uint16, prevRanges []*cidr.CIDR,
 
 func (m *LBMockMap) DumpSourceRanges(ipv6 bool) (datapathTypes.SourceRangeSetByServiceID, error) {
 	return m.SourceRanges, nil
+}
+
+func (m *LBMockMap) ExistsSockRevNat(cookie uint64, addr net.IP, port uint16) bool {
+	if addr.To4() != nil {
+		key := lbmap.NewSockRevNat4Key(cookie, addr, port)
+		if _, ok := m.SockRevNat4[*key]; ok {
+			return true
+		}
+	} else {
+		key := lbmap.NewSockRevNat6Key(cookie, addr, port)
+		if _, ok := m.SockRevNat6[*key]; ok {
+			return true
+		}
+	}
+
+	return false
 }

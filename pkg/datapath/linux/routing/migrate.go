@@ -9,6 +9,7 @@ import (
 	"github.com/vishvananda/netlink"
 
 	"github.com/cilium/cilium/pkg/datapath/linux/linux_defaults"
+	"github.com/cilium/cilium/pkg/datapath/linux/safenetlink"
 	"github.com/cilium/cilium/pkg/revert"
 )
 
@@ -234,7 +235,7 @@ func (m *migrator) MigrateENIDatapath(compat bool) (int, int) {
 			scopedLog := log.WithField("rule", rule)
 			scopedLog.WithError(err).WithField("routes", routes).
 				Warnf("Failed to cleanup after successfully migrating endpoint to %s ENI datapath. "+
-					"It is recommended that theses routes are cleaned up (by running `ip route del`), as it is possible in the future "+
+					"It is recommended that these routes are cleaned up (by running `ip route del`), as it is possible in the future "+
 					"to collide with another endpoint with the same IP.", version)
 		}
 	}
@@ -488,14 +489,13 @@ func (m *migrator) copyRoutes(routes []netlink.Route, from, to int) (revert.Reve
 	// gateway." with an errno of ENETUNREACH.
 	for _, r := range routes {
 		if r.Scope == netlink.SCOPE_LINK {
-			route := r
-			route.Table = to
-			if err := m.rpdb.RouteReplace(&route); err != nil {
+			r.Table = to
+			if err := m.rpdb.RouteReplace(&r); err != nil {
 				return revertStack, fmt.Errorf("unable to replace link scoped route under table ID: %w", err)
 			}
 
 			revertStack.Push(func() error {
-				if err := m.rpdb.RouteDel(&route); err != nil {
+				if err := m.rpdb.RouteDel(&r); err != nil {
 					return fmt.Errorf("failed to revert route upsert: %w", err)
 				}
 				return nil
@@ -509,14 +509,13 @@ func (m *migrator) copyRoutes(routes []netlink.Route, from, to int) (revert.Reve
 			continue
 		}
 
-		route := r
-		route.Table = to
-		if err := m.rpdb.RouteReplace(&route); err != nil {
+		r.Table = to
+		if err := m.rpdb.RouteReplace(&r); err != nil {
 			return revertStack, fmt.Errorf("unable to replace route under table ID: %w", err)
 		}
 
 		revertStack.Push(func() error {
-			if err := m.rpdb.RouteDel(&route); err != nil {
+			if err := m.rpdb.RouteDel(&r); err != nil {
 				return fmt.Errorf("failed to revert route upsert: %w", err)
 			}
 			return nil
@@ -581,16 +580,16 @@ type migrator struct {
 // forwards all RPDB operations to netlink.
 type defaultRPDB struct{}
 
-func (defaultRPDB) RuleList(family int) ([]netlink.Rule, error) { return netlink.RuleList(family) }
+func (defaultRPDB) RuleList(family int) ([]netlink.Rule, error) { return safenetlink.RuleList(family) }
 func (defaultRPDB) RuleAdd(rule *netlink.Rule) error            { return netlink.RuleAdd(rule) }
 func (defaultRPDB) RuleDel(rule *netlink.Rule) error            { return netlink.RuleDel(rule) }
 func (defaultRPDB) RouteListFiltered(family int, filter *netlink.Route, mask uint64) ([]netlink.Route, error) {
-	return netlink.RouteListFiltered(family, filter, mask)
+	return safenetlink.RouteListFiltered(family, filter, mask)
 }
 func (defaultRPDB) RouteAdd(route *netlink.Route) error     { return netlink.RouteAdd(route) }
 func (defaultRPDB) RouteDel(route *netlink.Route) error     { return netlink.RouteDel(route) }
 func (defaultRPDB) RouteReplace(route *netlink.Route) error { return netlink.RouteReplace(route) }
-func (defaultRPDB) LinkList() ([]netlink.Link, error)       { return netlink.LinkList() }
+func (defaultRPDB) LinkList() ([]netlink.Link, error)       { return safenetlink.LinkList() }
 func (defaultRPDB) LinkByIndex(ifindex int) (netlink.Link, error) {
 	return netlink.LinkByIndex(ifindex)
 }

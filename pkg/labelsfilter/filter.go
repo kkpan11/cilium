@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	log                  = logging.DefaultLogger.WithField(logfields.LogSubsys, "labels-filter")
-	validLabelPrefixesMU lock.RWMutex
-	validLabelPrefixes   *labelPrefixCfg // Label prefixes used to filter from all labels
+	log                    = logging.DefaultLogger.WithField(logfields.LogSubsys, "labels-filter")
+	validLabelPrefixesMU   lock.RWMutex
+	validLabelPrefixes     *labelPrefixCfg // Label prefixes used to filter from all labels
+	validNodeLabelPrefixes *labelPrefixCfg
 )
 
 const (
@@ -98,7 +99,7 @@ func parseLabelPrefix(label string) (*LabelPrefix, error) {
 
 	r, err := regexp.Compile(labelPrefix.Prefix)
 	if err != nil {
-		return nil, fmt.Errorf("unable to compile regexp: %s", err)
+		return nil, fmt.Errorf("unable to compile regexp: %w", err)
 	}
 	labelPrefix.expr = r
 
@@ -108,8 +109,8 @@ func parseLabelPrefix(label string) (*LabelPrefix, error) {
 // ParseLabelPrefixCfg parses valid label prefixes from a file and from a slice
 // of valid prefixes. Both are optional. If both are provided, both list are
 // appended together.
-func ParseLabelPrefixCfg(prefixes []string, file string) error {
-	var cfg *labelPrefixCfg
+func ParseLabelPrefixCfg(prefixes, nodePrefixes []string, file string) error {
+	var cfg, nodeCfg *labelPrefixCfg
 	var err error
 	var fromCustomFile bool
 
@@ -121,10 +122,29 @@ func ParseLabelPrefixCfg(prefixes []string, file string) error {
 		log.Infof("Parsing base label prefixes from file %s", file)
 		cfg, err = readLabelPrefixCfgFrom(file)
 		if err != nil {
-			return fmt.Errorf("unable to read label prefix file: %s", err)
+			return fmt.Errorf("unable to read label prefix file: %w", err)
 		}
 
 		fromCustomFile = true
+	}
+
+	//exhaustruct:ignore // Reading clean configuration, no need to initialize
+	nodeCfg = &labelPrefixCfg{}
+	log.Infof("Parsing node label prefixes from user inputs: %v", nodePrefixes)
+	for _, label := range nodePrefixes {
+		if len(label) == 0 {
+			continue
+		}
+		p, err := parseLabelPrefix(label)
+		if err != nil {
+			return err
+		}
+
+		if !p.Ignore {
+			nodeCfg.whitelist = true
+		}
+
+		nodeCfg.LabelPrefixes = append(nodeCfg.LabelPrefixes, p)
 	}
 
 	log.Infof("Parsing additional label prefixes from user inputs: %v", prefixes)
@@ -160,9 +180,15 @@ func ParseLabelPrefixCfg(prefixes []string, file string) error {
 	}
 
 	validLabelPrefixes = cfg
+	validNodeLabelPrefixes = nodeCfg
 
 	log.Info("Final label prefixes to be used for identity evaluation:")
 	for _, l := range validLabelPrefixes.LabelPrefixes {
+		log.Infof(" - %s", l)
+	}
+
+	log.Info("Final node label prefixes to be used for identity evaluation:")
+	for _, l := range validNodeLabelPrefixes.LabelPrefixes {
 		log.Infof(" - %s", l)
 	}
 
@@ -177,7 +203,7 @@ type labelPrefixCfg struct {
 	LabelPrefixes []*LabelPrefix `json:"valid-prefixes"`
 	// whitelist if true, indicates that an inclusive rule has to match
 	// in order for the label to be considered
-	whitelist bool
+	whitelist bool `exhaustruct:"optional"`
 }
 
 // defaultLabelPrefixCfg returns a default LabelPrefixCfg using the latest
@@ -189,19 +215,25 @@ func defaultLabelPrefixCfg() *labelPrefixCfg {
 	}
 
 	expressions := []string{
-		reservedLabelsPattern,                             // include all reserved labels
-		regexp.QuoteMeta(k8sConst.PodNamespaceLabel),      // include io.kubernetes.pod.namespace
-		regexp.QuoteMeta(k8sConst.PodNamespaceMetaLabels), // include all namespace labels
-		regexp.QuoteMeta(k8sConst.AppKubernetes),          // include app.kubernetes.io
-		`!io\.kubernetes`,                                 // ignore all other io.kubernetes labels
-		`!kubernetes\.io`,                                 // ignore all other kubernetes.io labels
-		`!.*beta\.kubernetes\.io`,                         // ignore all beta.kubernetes.io labels
-		`!k8s\.io`,                                        // ignore all k8s.io labels
-		`!pod-template-generation`,                        // ignore pod-template-generation
-		`!pod-template-hash`,                              // ignore pod-template-hash
-		`!controller-revision-hash`,                       // ignore controller-revision-hash
-		`!annotation.*`,                                   // ignore all annotation labels
-		`!etcd_node`,                                      // ignore etcd_node label
+		reservedLabelsPattern,                                           // include all reserved labels
+		regexp.QuoteMeta(k8sConst.PodNamespaceLabel),                    // include io.kubernetes.pod.namespace
+		regexp.QuoteMeta(k8sConst.PodNamespaceMetaLabels),               // include all namespace labels
+		regexp.QuoteMeta(k8sConst.AppKubernetes),                        // include app.kubernetes.io
+		regexp.QuoteMeta(k8sConst.PolicyLabelCluster),                   // include io.cilium.k8s.policy.cluster
+		`!io\.kubernetes`,                                               // ignore all other io.kubernetes labels
+		`!kubernetes\.io`,                                               // ignore all other kubernetes.io labels
+		"!" + regexp.QuoteMeta(k8sConst.StatefulSetPodNameLabel),        // ignore statefulset.kubernetes.io/pod-name label
+		"!" + regexp.QuoteMeta(k8sConst.StatefulSetPodIndexLabel),       // ignore apps.kubernetes.io/pod-index label
+		"!" + regexp.QuoteMeta(k8sConst.IndexedJobCompletionIndexLabel), // ignore batch.kubernetes.io/job-completion-index label
+		"!" + regexp.QuoteMeta(k8sConst.BatchJobControllerUID),          // ignore batch.kubernetes.io/controller-uid
+		`!.*beta\.kubernetes\.io`,                                       // ignore all beta.kubernetes.io labels
+		`!k8s\.io`,                                                      // ignore all k8s.io labels
+		`!pod-template-generation`,                                      // ignore pod-template-generation
+		`!pod-template-hash`,                                            // ignore pod-template-hash
+		`!controller-revision-hash`,                                     // ignore controller-revision-hash
+		`!controller-uid`,                                               // ignore controller-uid
+		`!annotation.*`,                                                 // ignore all annotation labels
+		`!etcd_node`,                                                    // ignore etcd_node label
 	}
 
 	for _, e := range expressions {
@@ -228,6 +260,7 @@ func readLabelPrefixCfgFrom(fileName string) (*labelPrefixCfg, error) {
 		return nil, err
 	}
 	defer f.Close()
+	//exhaustruct:ignore // Reading clean configuration, no need to initialize
 	lpc := labelPrefixCfg{}
 	err = json.NewDecoder(f).Decode(&lpc)
 	if err != nil {
@@ -305,4 +338,28 @@ func (cfg *labelPrefixCfg) filterLabels(lbls labels.Labels) (identityLabels, inf
 // the aforementioned filtering criteria.
 func Filter(lbls labels.Labels) (identityLabels, informationLabels labels.Labels) {
 	return validLabelPrefixes.filterLabels(lbls)
+}
+
+func FilterNodeLabels(lbls labels.Labels) (identityLabels, informationLabels labels.Labels) {
+	return validNodeLabelPrefixes.filterLabels(lbls)
+}
+
+func FilterLabelsByRegex(excludePatterns []*regexp.Regexp, labels map[string]string) map[string]string {
+	if len(excludePatterns) == 0 && labels != nil {
+		return labels
+	}
+	newLabels := make(map[string]string)
+	for k, v := range labels {
+		labelNeedsExclusion := false
+		for _, pattern := range excludePatterns {
+			if pattern.MatchString(k) {
+				labelNeedsExclusion = true
+				break
+			}
+		}
+		if !labelNeedsExclusion {
+			newLabels[k] = v
+		}
+	}
+	return newLabels
 }

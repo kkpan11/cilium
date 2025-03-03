@@ -19,14 +19,14 @@
  *
  * If TRACE_NOTIFY is not defined, the API will be compiled in as a NOP.
  */
-#ifndef __LIB_TRACE__
-#define __LIB_TRACE__
+#pragma once
 
 #include "dbg.h"
 #include "events.h"
 #include "common.h"
 #include "utils.h"
 #include "metrics.h"
+#include "ratelimit.h"
 
 /* Available observation points. */
 enum trace_point {
@@ -42,16 +42,21 @@ enum trace_point {
 	TRACE_FROM_OVERLAY,
 	TRACE_FROM_NETWORK,
 	TRACE_TO_NETWORK,
+	TRACE_FROM_CRYPTO,
+	TRACE_TO_CRYPTO,
 } __packed;
 
-/* Reasons for forwarding a packet. */
+/* Reasons for forwarding a packet, keep in sync with pkg/monitor/datapath_trace.go */
 enum trace_reason {
 	TRACE_REASON_POLICY = CT_NEW,
 	TRACE_REASON_CT_ESTABLISHED = CT_ESTABLISHED,
 	TRACE_REASON_CT_REPLY = CT_REPLY,
 	TRACE_REASON_CT_RELATED = CT_RELATED,
-	TRACE_REASON_CT_REOPENED = CT_REOPENED,
+	TRACE_REASON_RESERVED,
 	TRACE_REASON_UNKNOWN,
+	TRACE_REASON_SRV6_ENCAP,
+	TRACE_REASON_SRV6_DECAP,
+	TRACE_REASON_ENCRYPT_OVERLAY,
 	/* Note: TRACE_REASON_ENCRYPTED is used as a mask. Beware if you add
 	 * new values below it, they would match with that mask.
 	 */
@@ -65,6 +70,9 @@ enum {
 	TRACE_AGGREGATE_ACTIVE_CT = 3, /* Ratelimit active connection traces */
 };
 
+#define TRACE_EP_ID_UNKNOWN		0
+#define TRACE_IFINDEX_UNKNOWN		0	/* Linux kernel doesn't use ifindex 0 */
+
 #ifndef MONITOR_AGGREGATION
 #define MONITOR_AGGREGATION TRACE_AGGREGATE_NONE
 #endif
@@ -77,23 +85,25 @@ enum {
  *
  * Update metrics based on a trace event
  */
+#define update_trace_metrics(ctx, obs_point, reason) \
+	_update_trace_metrics(ctx, obs_point, reason, __MAGIC_LINE__, __MAGIC_FILE__)
 static __always_inline void
-update_trace_metrics(struct __ctx_buff *ctx, enum trace_point obs_point,
-		     enum trace_reason reason)
+_update_trace_metrics(struct __ctx_buff *ctx, enum trace_point obs_point,
+		      enum trace_reason reason, __u16 line, __u8 file)
 {
 	__u8 encrypted;
 
 	switch (obs_point) {
 	case TRACE_TO_LXC:
-		update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
-			       REASON_FORWARDED);
+		_update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
+				REASON_FORWARDED, line, file);
 		break;
 	case TRACE_TO_HOST:
 	case TRACE_TO_STACK:
 	case TRACE_TO_OVERLAY:
 	case TRACE_TO_NETWORK:
-		update_metrics(ctx_full_len(ctx), METRIC_EGRESS,
-			       REASON_FORWARDED);
+		_update_metrics(ctx_full_len(ctx), METRIC_EGRESS,
+				REASON_FORWARDED, line, file);
 		break;
 	case TRACE_FROM_HOST:
 	case TRACE_FROM_STACK:
@@ -101,11 +111,11 @@ update_trace_metrics(struct __ctx_buff *ctx, enum trace_point obs_point,
 	case TRACE_FROM_NETWORK:
 		encrypted = reason & TRACE_REASON_ENCRYPTED;
 		if (!encrypted)
-			update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
-				       REASON_PLAINTEXT);
+			_update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
+					REASON_PLAINTEXT, line, file);
 		else
-			update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
-				       REASON_DECRYPT);
+			_update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
+					REASON_DECRYPT, line, file);
 		break;
 	/* TRACE_FROM_LXC, i.e endpoint-to-endpoint delivery is handled
 	 * separately in ipv*_local_delivery() where we can bump an egress
@@ -120,6 +130,29 @@ update_trace_metrics(struct __ctx_buff *ctx, enum trace_point obs_point,
 	case TRACE_FROM_PROXY:
 	case TRACE_TO_PROXY:
 		break;
+	/* We define TRACE_{FROM,TO}_CRYPTO only (a) when Wireguard is enabled and (b) for:
+	 * - bpf_wireguard (cil_to_wireguard), attached as egress to cilium_wg0;
+	 * - bpf_host (cil_from_netdev), attached as ingress to cilium_wg0.
+	 * In both the cases, THIS_INTERFACE_IFINDEX is set to WG_IFINDEX value.
+	 * Using these obs points from different programs would result in a build bug.
+	 */
+#if defined(ENABLE_WIREGUARD) && (defined(IS_BPF_WIREGUARD) || defined(IS_BPF_HOST))
+	case TRACE_TO_CRYPTO:
+		build_bug_on(THIS_INTERFACE_IFINDEX != WG_IFINDEX);
+		_update_metrics(ctx_full_len(ctx), METRIC_EGRESS,
+				REASON_ENCRYPTING, line, file);
+		break;
+	case TRACE_FROM_CRYPTO:
+		build_bug_on(THIS_INTERFACE_IFINDEX != WG_IFINDEX);
+		_update_metrics(ctx_full_len(ctx), METRIC_INGRESS,
+				REASON_DECRYPTING, line, file);
+		break;
+#else
+	case TRACE_TO_CRYPTO:
+	case TRACE_FROM_CRYPTO:
+		build_bug_on(obs_point);
+		break;
+#endif
 	}
 }
 
@@ -130,7 +163,6 @@ struct trace_ctx {
 			 */
 };
 
-#ifdef TRACE_NOTIFY
 struct trace_notify {
 	NOTIFY_CAPTURE_HDR
 	__u32		src_label;
@@ -151,6 +183,7 @@ struct trace_notify {
 	};
 };
 
+#ifdef TRACE_NOTIFY
 static __always_inline bool
 emit_trace_notify(enum trace_point obs_point, __u32 monitor)
 {
@@ -161,6 +194,7 @@ emit_trace_notify(enum trace_point obs_point, __u32 monitor)
 		case TRACE_FROM_HOST:
 		case TRACE_FROM_STACK:
 		case TRACE_FROM_OVERLAY:
+		case TRACE_FROM_CRYPTO:
 		case TRACE_FROM_NETWORK:
 			return false;
 		default:
@@ -181,24 +215,40 @@ emit_trace_notify(enum trace_point obs_point, __u32 monitor)
 	return true;
 }
 
+#define send_trace_notify(ctx, obs_point, src, dst, dst_id, ifindex, reason, monitor) \
+		_send_trace_notify(ctx, obs_point, src, dst, dst_id, ifindex, reason, monitor, \
+		__MAGIC_LINE__, __MAGIC_FILE__)
 static __always_inline void
-send_trace_notify(struct __ctx_buff *ctx, enum trace_point obs_point,
-		  __u32 src, __u32 dst, __u16 dst_id, __u32 ifindex,
-		  enum trace_reason reason, __u32 monitor)
+_send_trace_notify(struct __ctx_buff *ctx, enum trace_point obs_point,
+		   __u32 src, __u32 dst, __u16 dst_id, __u32 ifindex,
+		   enum trace_reason reason, __u32 monitor, __u16 line, __u8 file)
 {
 	__u64 ctx_len = ctx_full_len(ctx);
 	__u64 cap_len = min_t(__u64, monitor ? : TRACE_PAYLOAD_LEN,
 			      ctx_len);
+	struct ratelimit_key rkey = {
+		.usage = RATELIMIT_USAGE_EVENTS_MAP,
+	};
+	struct ratelimit_settings settings = {
+		.topup_interval_ns = NSEC_PER_SEC,
+	};
 	struct trace_notify msg __align_stack_8;
 
-	update_trace_metrics(ctx, obs_point, reason);
+	_update_trace_metrics(ctx, obs_point, reason, line, file);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
 
+	if (EVENTS_MAP_RATE_LIMIT > 0) {
+		settings.bucket_size = EVENTS_MAP_BURST_LIMIT;
+		settings.tokens_per_topup = EVENTS_MAP_RATE_LIMIT;
+		if (!ratelimit_check_and_take(&rkey, &settings))
+			return;
+	}
+
 	msg = (typeof(msg)) {
 		__notify_common_hdr(CILIUM_NOTIFY_TRACE, obs_point),
-		__notify_pktcap_hdr(ctx_len, (__u16)cap_len),
+		__notify_pktcap_hdr((__u32)ctx_len, (__u16)cap_len, NOTIFY_CAPTURE_VER),
 		.src_label	= src,
 		.dst_label	= dst,
 		.dst_id		= dst_id,
@@ -220,16 +270,29 @@ send_trace_notify4(struct __ctx_buff *ctx, enum trace_point obs_point,
 	__u64 ctx_len = ctx_full_len(ctx);
 	__u64 cap_len = min_t(__u64, monitor ? : TRACE_PAYLOAD_LEN,
 			      ctx_len);
-	struct trace_notify msg;
+	struct ratelimit_key rkey = {
+		.usage = RATELIMIT_USAGE_EVENTS_MAP,
+	};
+	struct ratelimit_settings settings = {
+		.topup_interval_ns = NSEC_PER_SEC,
+	};
+	struct trace_notify msg __align_stack_8;
 
 	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
 
+	if (EVENTS_MAP_RATE_LIMIT > 0) {
+		settings.bucket_size = EVENTS_MAP_BURST_LIMIT;
+		settings.tokens_per_topup = EVENTS_MAP_RATE_LIMIT;
+		if (!ratelimit_check_and_take(&rkey, &settings))
+			return;
+	}
+
 	msg = (typeof(msg)) {
 		__notify_common_hdr(CILIUM_NOTIFY_TRACE, obs_point),
-		__notify_pktcap_hdr(ctx_len, (__u16)cap_len),
+		__notify_pktcap_hdr((__u32)ctx_len, (__u16)cap_len, NOTIFY_CAPTURE_VER),
 		.src_label	= src,
 		.dst_label	= dst,
 		.dst_id		= dst_id,
@@ -253,16 +316,29 @@ send_trace_notify6(struct __ctx_buff *ctx, enum trace_point obs_point,
 	__u64 ctx_len = ctx_full_len(ctx);
 	__u64 cap_len = min_t(__u64, monitor ? : TRACE_PAYLOAD_LEN,
 			      ctx_len);
-	struct trace_notify msg;
+	struct ratelimit_key rkey = {
+		.usage = RATELIMIT_USAGE_EVENTS_MAP,
+	};
+	struct ratelimit_settings settings = {
+		.topup_interval_ns = NSEC_PER_SEC,
+	};
+	struct trace_notify msg __align_stack_8;
 
 	update_trace_metrics(ctx, obs_point, reason);
 
 	if (!emit_trace_notify(obs_point, monitor))
 		return;
 
+	if (EVENTS_MAP_RATE_LIMIT > 0) {
+		settings.bucket_size = EVENTS_MAP_BURST_LIMIT;
+		settings.tokens_per_topup = EVENTS_MAP_RATE_LIMIT;
+		if (!ratelimit_check_and_take(&rkey, &settings))
+			return;
+	}
+
 	msg = (typeof(msg)) {
 		__notify_common_hdr(CILIUM_NOTIFY_TRACE, obs_point),
-		__notify_pktcap_hdr(ctx_len, (__u16)cap_len),
+		__notify_pktcap_hdr((__u32)ctx_len, (__u16)cap_len, NOTIFY_CAPTURE_VER),
 		.src_label	= src,
 		.dst_label	= dst,
 		.dst_id		= dst_id,
@@ -307,4 +383,3 @@ send_trace_notify6(struct __ctx_buff *ctx, enum trace_point obs_point,
 	update_trace_metrics(ctx, obs_point, reason);
 }
 #endif /* TRACE_NOTIFY */
-#endif /* __LIB_TRACE__ */

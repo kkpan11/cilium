@@ -13,13 +13,14 @@ import (
 	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
-var (
-	// GlobalIdentityManager is a singleton instance of an IdentityManager, used
-	// for easy updating / tracking lifecycles of identities on the local node
-	// without having to pass around a specific instance of an IdentityManager
-	// throughout Cilium.
-	GlobalIdentityManager = NewIdentityManager()
-)
+type IDManager interface {
+	Add(identity *identity.Identity)
+	GetIdentityModels() []*models.IdentityEndpoints
+	Remove(identity *identity.Identity)
+	RemoveAll()
+	RemoveOldAddNew(old *identity.Identity, new *identity.Identity)
+	Subscribe(o Observer)
+}
 
 // IdentityManager caches information about a set of identities, currently a
 // reference count of how many users there are for each identity.
@@ -29,32 +30,21 @@ type IdentityManager struct {
 	observers  map[Observer]struct{}
 }
 
+// NewIDManager returns an initialized IdentityManager.
+func NewIDManager() IDManager {
+	return newIdentityManager()
+}
+
 type identityMetadata struct {
 	identity *identity.Identity
 	refCount uint
 }
 
-// NewIdentityManager returns an initialized IdentityManager.
-func NewIdentityManager() *IdentityManager {
+func newIdentityManager() *IdentityManager {
 	return &IdentityManager{
 		identities: make(map[identity.NumericIdentity]*identityMetadata),
 		observers:  make(map[Observer]struct{}),
 	}
-}
-
-// Add inserts the identity into the GlobalIdentityManager.
-func Add(identity *identity.Identity) {
-	GlobalIdentityManager.Add(identity)
-}
-
-// Remove deletes the identity from the GlobalIdentityManager.
-func Remove(identity *identity.Identity) {
-	GlobalIdentityManager.Remove(identity)
-}
-
-// RemoveAll deletes all identities from the GlobalIdentityManager.
-func RemoveAll() {
-	GlobalIdentityManager.RemoveAll()
 }
 
 // Add inserts the identity into the identity manager. If the identity is
@@ -71,7 +61,6 @@ func (idm *IdentityManager) Add(identity *identity.Identity) {
 }
 
 func (idm *IdentityManager) add(identity *identity.Identity) {
-
 	if identity == nil {
 		return
 	}
@@ -117,12 +106,6 @@ func (idm *IdentityManager) RemoveOldAddNew(old, new *identity.Identity) {
 	idm.add(new)
 }
 
-// RemoveOldAddNew removes old from and inserts new into the
-// GlobalIdentityManager.
-func RemoveOldAddNew(old, new *identity.Identity) {
-	GlobalIdentityManager.RemoveOldAddNew(old, new)
-}
-
 // RemoveAll removes all identities.
 func (idm *IdentityManager) RemoveAll() {
 	idm.mutex.Lock()
@@ -148,7 +131,6 @@ func (idm *IdentityManager) Remove(identity *identity.Identity) {
 }
 
 func (idm *IdentityManager) remove(identity *identity.Identity) {
-
 	if identity == nil {
 		return
 	}
@@ -187,16 +169,12 @@ func (idm *IdentityManager) GetIdentityModels() []*models.IdentityEndpoints {
 	return identities
 }
 
-func (idm *IdentityManager) subscribe(o Observer) {
+// Subscribe adds the specified Observer to the global identity manager, to be
+// notified upon changes to local identity usage.
+func (idm *IdentityManager) Subscribe(o Observer) {
 	idm.mutex.Lock()
 	defer idm.mutex.Unlock()
 	idm.observers[o] = struct{}{}
-}
-
-// GetIdentityModels returns the API model of all identities in the
-// GlobalIdentityManager.
-func GetIdentityModels() []*models.IdentityEndpoints {
-	return GlobalIdentityManager.GetIdentityModels()
 }
 
 // IdentitiesModel is a wrapper so that we can implement the sort.Interface
@@ -207,10 +185,4 @@ type IdentitiesModel []*models.IdentityEndpoints
 // in index `j`
 func (s IdentitiesModel) Less(i, j int) bool {
 	return s[i].Identity.ID < s[j].Identity.ID
-}
-
-// Subscribe adds the specified Observer to the global identity manager, to be
-// notified upon changes to local identity usage.
-func Subscribe(o Observer) {
-	GlobalIdentityManager.subscribe(o)
 }

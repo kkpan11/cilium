@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 
@@ -38,7 +37,7 @@ func TestEventsSubscribe(t *testing.T) {
 	}
 	time.Sleep(time.Millisecond * 20)
 	assert.True(handle.isClosed(), "after filling buffer, should be closed")
-	assert.Len(eb.subscriptions, 0)
+	assert.Empty(eb.subscriptions)
 
 	handle, err = eb.dumpAndSubscribe(nil, true)
 	assert.NoError(err)
@@ -51,7 +50,5 @@ func TestEventsSubscribe(t *testing.T) {
 
 type IntTestKey uint32
 
-func (k IntTestKey) String() string            { return fmt.Sprintf("key=%d", k) }
-func (k IntTestKey) GetKeyPtr() unsafe.Pointer { panic("not impl") }
-func (k IntTestKey) NewValue() MapValue        { panic("not impl") }
-func (k IntTestKey) DeepCopyMapKey() MapKey    { panic("not impl") }
+func (k IntTestKey) String() string { return fmt.Sprintf("key=%d", k) }
+func (k IntTestKey) New() MapKey    { return new(IntTestKey) }

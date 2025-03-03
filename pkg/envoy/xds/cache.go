@@ -4,8 +4,7 @@
 package xds
 
 import (
-	"context"
-	"sort"
+	"slices"
 
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
@@ -60,11 +59,11 @@ func NewCache() *Cache {
 	}
 }
 
-// tx inserts/updates a set of resources, then deletes a set of resources, then
+// TX inserts/updates a set of resources, then deletes a set of resources, then
 // increases the cache's version number atomically if the cache is actually
 // changed.
 // The version after updating the set is returned.
-func (c *Cache) tx(typeURL string, upsertedResources map[string]proto.Message, deletedNames []string) (version uint64, updated bool, revert ResourceMutatorRevertFunc) {
+func (c *Cache) TX(typeURL string, upsertedResources map[string]proto.Message, deletedNames []string) (version uint64, updated bool, revert ResourceMutatorRevertFunc) {
 	c.locker.Lock()
 	defer c.locker.Unlock()
 
@@ -142,7 +141,7 @@ func (c *Cache) tx(typeURL string, upsertedResources map[string]proto.Message, d
 		c.NotifyNewResourceVersionRLocked(typeURL, c.version)
 
 		revert = func() (version uint64, updated bool) {
-			version, updated, _ = c.tx(typeURL, revertUpsertedResources, revertDeletedNames)
+			version, updated, _ = c.TX(typeURL, revertUpsertedResources, revertDeletedNames)
 			return
 		}
 	} else {
@@ -153,11 +152,11 @@ func (c *Cache) tx(typeURL string, upsertedResources map[string]proto.Message, d
 }
 
 func (c *Cache) Upsert(typeURL string, resourceName string, resource proto.Message) (version uint64, updated bool, revert ResourceMutatorRevertFunc) {
-	return c.tx(typeURL, map[string]proto.Message{resourceName: resource}, nil)
+	return c.TX(typeURL, map[string]proto.Message{resourceName: resource}, nil)
 }
 
 func (c *Cache) Delete(typeURL string, resourceName string) (version uint64, updated bool, revert ResourceMutatorRevertFunc) {
-	return c.tx(typeURL, nil, []string{resourceName})
+	return c.TX(typeURL, nil, []string{resourceName})
 }
 
 func (c *Cache) Clear(typeURL string) (version uint64, updated bool) {
@@ -194,7 +193,7 @@ func (c *Cache) Clear(typeURL string) (version uint64, updated bool) {
 	return c.version, cacheIsUpdated
 }
 
-func (c *Cache) GetResources(ctx context.Context, typeURL string, lastVersion uint64, nodeIP string, resourceNames []string) (*VersionedResources, error) {
+func (c *Cache) GetResources(typeURL string, lastVersion uint64, nodeIP string, resourceNames []string) (*VersionedResources, error) {
 	c.locker.RLock()
 	defer c.locker.RUnlock()
 
@@ -209,16 +208,19 @@ func (c *Cache) GetResources(ctx context.Context, typeURL string, lastVersion ui
 		Canary:  false,
 	}
 
-	// Return all resources.
+	// Return all resources of given typeURL.
 	// TODO: return nil if no changes since the last version?
 	if len(resourceNames) == 0 {
 		res.ResourceNames = make([]string, 0, len(c.resources))
 		res.Resources = make([]proto.Message, 0, len(c.resources))
-		cacheLog.Debugf("no resource names requested, returning all %d resources", len(c.resources))
 		for k, v := range c.resources {
+			if k.typeURL != typeURL {
+				continue
+			}
 			res.ResourceNames = append(res.ResourceNames, k.resourceName)
 			res.Resources = append(res.Resources, v.resource)
 		}
+		cacheLog.Debugf("no resource names requested, returning %d resources of type %s", len(res.Resources), typeURL)
 		return res, nil
 	}
 
@@ -262,7 +264,7 @@ func (c *Cache) GetResources(ctx context.Context, typeURL string, lastVersion ui
 		return nil, nil
 	}
 
-	sort.Strings(res.ResourceNames)
+	slices.Sort(res.ResourceNames)
 
 	cacheLog.Debugf("returning %d resources out of %d requested", len(res.Resources), len(resourceNames))
 	return res, nil
@@ -288,7 +290,7 @@ func (c *Cache) EnsureVersion(typeURL string, version uint64) {
 // if available, and returns it. Otherwise, returns nil. If an error occurs while
 // fetching the resource, also returns the error.
 func (c *Cache) Lookup(typeURL string, resourceName string) (proto.Message, error) {
-	res, err := c.GetResources(context.Background(), typeURL, 0, "", []string{resourceName})
+	res, err := c.GetResources(typeURL, 0, "", []string{resourceName})
 	if err != nil || res == nil || len(res.Resources) == 0 {
 		return nil, err
 	}

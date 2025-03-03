@@ -8,7 +8,6 @@ package synced
 import (
 	"context"
 	"errors"
-	"time"
 
 	apiextclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,15 +17,15 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
-	"github.com/cilium/cilium/pkg/k8s"
+	operatorOption "github.com/cilium/cilium/operator/option"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
-	v2alpha1 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
+	"github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2alpha1"
 	"github.com/cilium/cilium/pkg/k8s/client"
 	"github.com/cilium/cilium/pkg/k8s/informer"
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
-	k8sversion "github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 const (
@@ -39,12 +38,9 @@ func CRDResourceName(crd string) string {
 
 func agentCRDResourceNames() []string {
 	result := []string{
-		CRDResourceName(v2.CNPName),
-		CRDResourceName(v2.CCNPName),
 		CRDResourceName(v2.CNName),
 		CRDResourceName(v2.CIDName),
-		CRDResourceName(v2alpha1.CNCName),
-		CRDResourceName(v2alpha1.CCGName),
+		CRDResourceName(v2alpha1.CPIPName),
 	}
 
 	if !option.Config.DisableCiliumEndpointCRD {
@@ -52,6 +48,18 @@ func agentCRDResourceNames() []string {
 		if option.Config.EnableCiliumEndpointSlice {
 			result = append(result, CRDResourceName(v2alpha1.CESName))
 		}
+	}
+
+	if option.Config.EnableCiliumNetworkPolicy {
+		result = append(result, CRDResourceName(v2.CNPName))
+	}
+
+	if option.Config.EnableCiliumClusterwideNetworkPolicy {
+		result = append(result, CRDResourceName(v2.CCNPName))
+	}
+
+	if option.Config.EnableCiliumNetworkPolicy || option.Config.EnableCiliumClusterwideNetworkPolicy {
+		result = append(result, CRDResourceName(v2alpha1.CCGName))
 	}
 
 	if option.Config.EnableIPv4EgressGateway {
@@ -66,9 +74,18 @@ func agentCRDResourceNames() []string {
 	}
 	if option.Config.EnableBGPControlPlane {
 		result = append(result, CRDResourceName(v2alpha1.BGPPName))
+		// BGPv2 CRDs
+		result = append(result, CRDResourceName(v2alpha1.BGPCCName))
+		result = append(result, CRDResourceName(v2alpha1.BGPAName))
+		result = append(result, CRDResourceName(v2alpha1.BGPPCName))
+		result = append(result, CRDResourceName(v2alpha1.BGPNCName))
+		result = append(result, CRDResourceName(v2alpha1.BGPNCOName))
 	}
 
-	result = append(result, CRDResourceName(v2alpha1.LBIPPoolName))
+	result = append(result,
+		CRDResourceName(v2alpha1.LBIPPoolName),
+		CRDResourceName(v2alpha1.L2AnnouncementName),
+	)
 
 	return result
 }
@@ -79,20 +96,42 @@ func AgentCRDResourceNames() []string {
 	return agentCRDResourceNames()
 }
 
+// ClusterMeshAPIServerResourceNames returns a list of all CRD resource names the
+// clustermesh-apiserver needs to wait to be registered before initializing any
+// k8s watchers.
+func ClusterMeshAPIServerResourceNames() []string {
+	return []string{
+		CRDResourceName(v2.CNName),
+		CRDResourceName(v2.CIDName),
+		CRDResourceName(v2.CEPName),
+	}
+}
+
+func GatewayAPIResourceNames() []string {
+	if !operatorOption.Config.EnableGatewayAPI {
+		return nil
+	}
+	return []string{
+		CRDResourceName(v2alpha1.CGCCName),
+	}
+}
+
 // AllCiliumCRDResourceNames returns a list of all Cilium CRD resource names
-// that the clustermesh-apiserver or testsuite may register.
+// that the cilium operator or testsuite may register.
 func AllCiliumCRDResourceNames() []string {
-	return append(
-		AgentCRDResourceNames(),
-		CRDResourceName(v2.CEWName),
+	res := append(AgentCRDResourceNames(), GatewayAPIResourceNames()...)
+	res = append(res,
+		CRDResourceName(v2.CNCName),
+		CRDResourceName(v2alpha1.CNCName), // TODO depreciate CNC on v2alpha1 https://github.com/cilium/cilium/issues/31982
 	)
+	return res
 }
 
 // SyncCRDs will sync Cilium CRDs to ensure that they have all been
 // installed inside the K8s cluster. These CRDs are added by the
 // Cilium Operator. This function will block until it finds all the
 // CRDs or if a timeout occurs.
-func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string, rs *Resources, ag *APIGroups) error {
+func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string, rs *Resources, ag *APIGroups, cfg CRDSyncConfig) error {
 	crds := newCRDState(crdNames)
 
 	listerWatcher := newListWatchFromClient(
@@ -112,7 +151,7 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 
 	// Create a context so that we can timeout after the configured CRD wait
 	// peroid.
-	ctx, cancel := context.WithTimeout(ctx, option.Config.CRDWaitTimeout)
+	ctx, cancel := context.WithTimeout(ctx, cfg.CRDWaitTimeout)
 	defer cancel()
 
 	crds.Lock()
@@ -157,7 +196,8 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 
 	log.Info("Waiting until all Cilium CRDs are available")
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	count := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -168,7 +208,7 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 						"%v timeout. Please ensure that Cilium Operator is "+
 						"running, as it's responsible for registering all "+
 						"the Cilium CRDs. The following CRDs were not found: %v",
-						option.Config.CRDWaitTimeout, crds.unSynced())
+						cfg.CRDWaitTimeout, crds.unSynced())
 			}
 			// If the context was canceled it means the daemon is being stopped
 			// so we can return the context's error.
@@ -179,12 +219,17 @@ func SyncCRDs(ctx context.Context, clientset client.Clientset, crdNames []string
 				log.Info("All Cilium CRDs have been found and are available")
 				return nil
 			}
+			count++
+			if count == 20 {
+				count = 0
+				log.Infof("Still waiting for Cilium Operator to register the following CRDs: %v", crds.unSynced())
+			}
 		}
 	}
 }
 
 func (s *crdState) add(obj interface{}) {
-	if pom := k8s.ObjToV1PartialObjectMetadata(obj); pom != nil {
+	if pom := informer.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = true
 		s.Unlock()
@@ -192,7 +237,7 @@ func (s *crdState) add(obj interface{}) {
 }
 
 func (s *crdState) remove(obj interface{}) {
-	if pom := k8s.ObjToV1PartialObjectMetadata(obj); pom != nil {
+	if pom := informer.CastInformerEvent[slim_metav1.PartialObjectMetadata](obj); pom != nil {
 		s.Lock()
 		s.m[CRDResourceName(pom.GetName())] = false
 		s.Unlock()
@@ -324,21 +369,10 @@ const (
 // client (v1 or v1beta1) in order to retrieve the CRDs in a
 // backwards-compatible way. This implements the cache.Getter interface.
 func (c *crdGetter) Get() *rest.Request {
-	var req *rest.Request
-
-	if k8sversion.Capabilities().APIExtensionsV1CRD {
-		req = c.api.ApiextensionsV1().
-			RESTClient().
-			Get().
-			Name("customresourcedefinitions")
-	} else {
-		req = c.api.ApiextensionsV1beta1().
-			RESTClient().
-			Get().
-			Name("customresourcedefinitions")
-	}
-
-	return req
+	return c.api.ApiextensionsV1().
+		RESTClient().
+		Get().
+		Name("customresourcedefinitions")
 }
 
 type crdGetter struct {

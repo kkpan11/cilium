@@ -21,8 +21,6 @@ type Interface interface {
 	CiliumEndpoints() CiliumEndpointInformer
 	// CiliumEnvoyConfigs returns a CiliumEnvoyConfigInformer.
 	CiliumEnvoyConfigs() CiliumEnvoyConfigInformer
-	// CiliumExternalWorkloads returns a CiliumExternalWorkloadInformer.
-	CiliumExternalWorkloads() CiliumExternalWorkloadInformer
 	// CiliumIdentities returns a CiliumIdentityInformer.
 	CiliumIdentities() CiliumIdentityInformer
 	// CiliumLocalRedirectPolicies returns a CiliumLocalRedirectPolicyInformer.
@@ -31,6 +29,8 @@ type Interface interface {
 	CiliumNetworkPolicies() CiliumNetworkPolicyInformer
 	// CiliumNodes returns a CiliumNodeInformer.
 	CiliumNodes() CiliumNodeInformer
+	// CiliumNodeConfigs returns a CiliumNodeConfigInformer.
+	CiliumNodeConfigs() CiliumNodeConfigInformer
 }
 
 type version struct {
@@ -69,11 +69,6 @@ func (v *version) CiliumEnvoyConfigs() CiliumEnvoyConfigInformer {
 	return &ciliumEnvoyConfigInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// CiliumExternalWorkloads returns a CiliumExternalWorkloadInformer.
-func (v *version) CiliumExternalWorkloads() CiliumExternalWorkloadInformer {
-	return &ciliumExternalWorkloadInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
 // CiliumIdentities returns a CiliumIdentityInformer.
 func (v *version) CiliumIdentities() CiliumIdentityInformer {
 	return &ciliumIdentityInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
@@ -92,4 +87,9 @@ func (v *version) CiliumNetworkPolicies() CiliumNetworkPolicyInformer {
 // CiliumNodes returns a CiliumNodeInformer.
 func (v *version) CiliumNodes() CiliumNodeInformer {
 	return &ciliumNodeInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
+// CiliumNodeConfigs returns a CiliumNodeConfigInformer.
+func (v *version) CiliumNodeConfigs() CiliumNodeConfigInformer {
+	return &ciliumNodeConfigInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
