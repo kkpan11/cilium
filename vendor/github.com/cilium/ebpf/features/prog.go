@@ -125,6 +125,9 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 				Name: "a",
 				Type: &btf.FuncProto{
 					Return: &btf.Int{},
+					Params: []btf.FuncParam{
+						{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md"}}},
+					},
 				},
 				Linkage: btf.GlobalFunc,
 			}
@@ -182,7 +185,7 @@ var haveProgramTypeMatrix = internal.FeatureMatrix[ebpf.ProgramType]{
 		Fn: func() error {
 			return probeProgram(&ebpf.ProgramSpec{
 				Type:  ebpf.Syscall,
-				Flags: unix.BPF_F_SLEEPABLE,
+				Flags: sys.BPF_F_SLEEPABLE,
 			})
 		},
 	},
@@ -234,6 +237,10 @@ func HaveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 }
 
 func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
+	if ok := helperProbeNotImplemented(pt); ok {
+		return fmt.Errorf("no feature probe for %v/%v", pt, helper)
+	}
+
 	if err := HaveProgramType(pt); err != nil {
 		return err
 	}
@@ -256,7 +263,7 @@ func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 	case ebpf.SkLookup:
 		spec.AttachType = ebpf.AttachSkLookup
 	case ebpf.Syscall:
-		spec.Flags = unix.BPF_F_SLEEPABLE
+		spec.Flags = sys.BPF_F_SLEEPABLE
 	}
 
 	prog, err := ebpf.NewProgramWithOptions(spec, ebpf.ProgramOptions{
@@ -282,4 +289,12 @@ func haveProgramHelper(pt ebpf.ProgramType, helper asm.BuiltinFunc) error {
 	}
 
 	return err
+}
+
+func helperProbeNotImplemented(pt ebpf.ProgramType) bool {
+	switch pt {
+	case ebpf.Extension, ebpf.LSM, ebpf.StructOps, ebpf.Tracing:
+		return true
+	}
+	return false
 }

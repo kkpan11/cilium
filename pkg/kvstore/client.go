@@ -6,9 +6,8 @@ package kvstore
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var (
@@ -39,9 +38,6 @@ func initClient(ctx context.Context, module backendModule, opts *ExtraOptions) e
 		err, isErr := <-errChan
 		if isErr && err != nil {
 			scopedLog.WithError(err).Fatal("Unable to connect to kvstore")
-		}
-		if !option.Config.JoinCluster {
-			deleteLegacyPrefixes(ctx)
 		}
 	}()
 

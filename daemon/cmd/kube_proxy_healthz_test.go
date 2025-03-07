@@ -7,17 +7,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"testing"
 	"time"
 
-	. "gopkg.in/check.v1"
+	"github.com/stretchr/testify/require"
 
 	"github.com/cilium/cilium/api/v1/models"
 )
 
-// 'check' testing suite scaffolding.
 type KubeProxyHealthzTestSuite struct{}
-
-var _ = Suite(&KubeProxyHealthzTestSuite{})
 
 // Injected fake service.
 type FakeService struct {
@@ -38,7 +36,7 @@ type FakeDaemon struct {
 	injectedStatusResponse models.StatusResponse
 }
 
-func (d *FakeDaemon) getStatus(blah bool) models.StatusResponse {
+func (d *FakeDaemon) getStatus(brief bool, requireK8sConnectivity bool) models.StatusResponse {
 	return d.injectedStatusResponse
 }
 
@@ -47,15 +45,16 @@ type healthzPayload struct {
 	CurrentTime string
 }
 
-func (s *KubeProxyHealthzTestSuite) TestKubeProxyHealth(c *C) {
-	s.healthTestHelper(c, models.StatusStateOk, http.StatusOK, true)
-	s.healthTestHelper(c, models.StatusStateWarning,
+func TestKubeProxyHealth(t *testing.T) {
+	s := KubeProxyHealthzTestSuite{}
+	s.healthTestHelper(t, models.StatusStateOk, http.StatusOK, true)
+	s.healthTestHelper(t, models.StatusStateWarning,
 		http.StatusServiceUnavailable, false)
-	s.healthTestHelper(c, models.StatusStateFailure,
+	s.healthTestHelper(t, models.StatusStateFailure,
 		http.StatusServiceUnavailable, false)
 }
 
-func (s *KubeProxyHealthzTestSuite) healthTestHelper(c *C, ciliumStatus string,
+func (s *KubeProxyHealthzTestSuite) healthTestHelper(t *testing.T, ciliumStatus string,
 	expectedHttpStatus int, testcasepositive bool) {
 	var lastUpdateTs, currentTs, expectedTs time.Time
 	lastUpdateTs = time.Unix(100, 0) // Fake 100 seconds after Unix.
@@ -73,25 +72,24 @@ func (s *KubeProxyHealthzTestSuite) healthTestHelper(c *C, ciliumStatus string,
 			injectedLastUpdatedTs: lastUpdateTs}}
 
 	// Create a new request.
-	req, err := http.NewRequest("GET", "/healthz", nil)
-	c.Assert(err, IsNil)
+	req, err := http.NewRequest(http.MethodGet, "/healthz", nil)
+	require.NoError(t, err)
 	w := httptest.NewRecorder()
 
 	// Serve.
 	h.ServeHTTP(w, req)
 
 	// Main return code meets expectations.
-	c.Assert(w.Code, Equals, expectedHttpStatus,
-		Commentf("expected status code %v, got %v", expectedHttpStatus, w.Code))
+	require.Equalf(t, expectedHttpStatus, w.Code, "expected status code %v, got %v", expectedHttpStatus, w.Code)
 
 	// Timestamps meet expectations.
 	var payload healthzPayload
-	c.Assert(json.Unmarshal(w.Body.Bytes(), &payload), IsNil)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &payload))
 	layout := "2006-01-02 15:04:05 -0700 MST"
 	lastUpdateTs, err = time.Parse(layout, payload.LastUpdated)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	_, err = time.Parse(layout, payload.CurrentTime)
-	c.Assert(err, IsNil)
-	c.Assert(lastUpdateTs.Equal(expectedTs), Equals, true)
+	require.NoError(t, err)
+	require.True(t, lastUpdateTs.Equal(expectedTs))
 }

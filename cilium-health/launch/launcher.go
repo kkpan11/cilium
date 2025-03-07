@@ -4,9 +4,10 @@
 package launch
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
-	"time"
 
 	healthApi "github.com/cilium/cilium/api/v1/health/server"
 	"github.com/cilium/cilium/api/v1/models"
@@ -19,6 +20,7 @@ import (
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 // CiliumHealth launches and polls the cilium-health daemon
@@ -32,22 +34,22 @@ type CiliumHealth struct {
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "cilium-health-launcher")
 
 const (
-	serverProbeInterval  = 60 * time.Second
-	serverProbeDeadline  = 1 * time.Second
+	serverProbeDeadline  = 10 * time.Second
 	connectRetryInterval = 1 * time.Second
 	statusProbeInterval  = 5 * time.Second
 )
 
 // Launch starts the cilium-health server and returns a handle to obtain its status
-func Launch(spec *healthApi.Spec) (*CiliumHealth, error) {
+func Launch(spec *healthApi.Spec, initialized <-chan struct{}) (*CiliumHealth, error) {
 	var (
 		err error
 		ch  = &CiliumHealth{}
 	)
 
 	config := server.Config{
+		CiliumURI:     ciliumPkg.DefaultSockPath(),
 		Debug:         option.Config.Opts.IsEnabled(option.Debug),
-		ProbeInterval: serverProbeInterval,
+		ICMPReqsCount: option.Config.HealthCheckICMPFailureThreshold,
 		ProbeDeadline: serverProbeDeadline,
 		HTTPPathPort:  option.Config.ClusterHealthPort,
 		HealthAPISpec: spec,
@@ -55,20 +57,23 @@ func Launch(spec *healthApi.Spec) (*CiliumHealth, error) {
 
 	ch.server, err = server.NewServer(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to instantiate cilium-health server: %s", err)
+		return nil, fmt.Errorf("failed to instantiate cilium-health server: %w", err)
 	}
 
 	ch.client, err = client.NewDefaultClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to instantiate cilium-health client: %s", err)
+		return nil, fmt.Errorf("failed to instantiate cilium-health client: %w", err)
 	}
 
-	go ch.runServer()
+	go ch.runServer(initialized)
 
 	return ch, nil
 }
 
-func (ch *CiliumHealth) runServer() {
+func (ch *CiliumHealth) runServer(initialized <-chan struct{}) {
+	// Wait until the agent has initialized sufficiently
+	<-initialized
+
 	// Wait until Cilium API is available
 	for {
 		cli, err := ciliumPkg.NewDefaultClient()
@@ -86,7 +91,7 @@ func (ch *CiliumHealth) runServer() {
 	os.Remove(defaults.SockPath)
 	go func() {
 		defer ch.server.Shutdown()
-		if err := ch.server.Serve(); err != nil {
+		if err := ch.server.Serve(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.WithError(err).Error("Failed to serve cilium-health API")
 		}
 	}()
@@ -101,7 +106,7 @@ func (ch *CiliumHealth) runServer() {
 		scopedLog.WithError(err).Debugf("Cannot find socket")
 		time.Sleep(1 * time.Second)
 	}
-	if err := api.SetDefaultPermissions(defaults.SockPath); err != nil {
+	if err := api.SetDefaultPermissions(logging.DefaultSlogLogger, defaults.SockPath); err != nil {
 		scopedLog.WithError(err).Fatal("Cannot set default permissions on socket")
 	}
 

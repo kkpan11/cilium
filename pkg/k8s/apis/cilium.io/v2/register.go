@@ -95,17 +95,6 @@ const (
 	// CLRPName is the full name of Local Redirect Policy
 	CLRPName = CLRPPluralName + "." + CustomResourceDefinitionGroup
 
-	// Cilium External Workload (CEW)
-
-	// CEWPluralName is the plural name of Cilium External Workload
-	CEWPluralName = "ciliumexternalworkloads"
-
-	// CEWKindDefinition is the kind name for Cilium External Workload
-	CEWKindDefinition = "CiliumExternalWorkload"
-
-	// CEWName is the full name of Cilium External Workload
-	CEWName = CEWPluralName + "." + CustomResourceDefinitionGroup
-
 	// Cilium Cluster Envoy Config (CCEC)
 
 	// CCECPluralName is the plural name of Cilium Clusterwide Envoy Config
@@ -127,6 +116,44 @@ const (
 
 	// CECName is the full name of Cilium Envoy Config
 	CECName = CECPluralName + "." + CustomResourceDefinitionGroup
+
+	// CiliumNodeConfig (CNC)
+
+	// CNCPluralName is the plural name of Cilium Node Config
+	CNCPluralName = "ciliumnodeconfigs"
+
+	// CNCKindDefinition is the kind name of Cilium Node Config
+	CNCKindDefinition = "CiliumNodeConfig"
+
+	// CNCName is the full name of Cilium Node Config
+	CNCName = CNCPluralName + "." + CustomResourceDefinitionGroup
+
+	// BGP Control Plane
+
+	// BGPClusterConfig (BGPCC)
+	BGPCCPluralName     = "ciliumbgpclusterconfigs"
+	BGPCCKindDefinition = "CiliumBGPClusterConfig"
+	BGPCCName           = BGPCCPluralName + "." + CustomResourceDefinitionGroup
+
+	// BGPPeerConfig (BGPPC)
+	BGPPCPluralName     = "ciliumbgppeerconfigs"
+	BGPPCKindDefinition = "CiliumBGPPeerConfig"
+	BGPPCName           = BGPPCPluralName + "." + CustomResourceDefinitionGroup
+
+	// BGPAdvertisement (BGPA)
+	BGPAPluralName     = "ciliumbgpadvertisements"
+	BGPAKindDefinition = "CiliumBGPAdvertisement"
+	BGPAName           = BGPAPluralName + "." + CustomResourceDefinitionGroup
+
+	// BGPNodeConfig (BGPNC)
+	BGPNCPluralName     = "ciliumbgpnodeconfigs"
+	BGPNCKindDefinition = "CiliumBGPNodeConfig"
+	BGPNCName           = BGPNCPluralName + "." + CustomResourceDefinitionGroup
+
+	// BGPNodeConfigOverride (BGPNCO)
+	BGPNCOPluralName     = "ciliumbgpnodeconfigoverrides"
+	BGPNCOKindDefinition = "CiliumBGPNodeConfigOverride"
+	BGPNCOName           = BGPNCOPluralName + "." + CustomResourceDefinitionGroup
 )
 
 // SchemeGroupVersion is group version used to register these objects
@@ -180,8 +207,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CiliumEndpointList{},
 		&CiliumNode{},
 		&CiliumNodeList{},
-		&CiliumExternalWorkload{},
-		&CiliumExternalWorkloadList{},
+		&CiliumNodeConfig{},
+		&CiliumNodeConfigList{},
 		&CiliumIdentity{},
 		&CiliumIdentityList{},
 		&CiliumLocalRedirectPolicy{},
@@ -190,6 +217,16 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&CiliumEnvoyConfigList{},
 		&CiliumClusterwideEnvoyConfig{},
 		&CiliumClusterwideEnvoyConfigList{},
+		&CiliumBGPClusterConfig{},
+		&CiliumBGPClusterConfigList{},
+		&CiliumBGPPeerConfig{},
+		&CiliumBGPPeerConfigList{},
+		&CiliumBGPAdvertisement{},
+		&CiliumBGPAdvertisementList{},
+		&CiliumBGPNodeConfig{},
+		&CiliumBGPNodeConfigList{},
+		&CiliumBGPNodeConfigOverride{},
+		&CiliumBGPNodeConfigOverrideList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

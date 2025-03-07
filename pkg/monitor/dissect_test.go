@@ -8,19 +8,10 @@ import (
 	"net"
 	"testing"
 
-	. "gopkg.in/check.v1"
+	"github.com/stretchr/testify/require"
 )
 
-// Hook up gocheck into the "go test" runner.
-func Test(t *testing.T) {
-	TestingT(t)
-}
-
-type MonitorSuite struct{}
-
-var _ = Suite(&MonitorSuite{})
-
-func (s *MonitorSuite) TestDissectSummary(c *C) {
+func TestDissectSummary(t *testing.T) {
 
 	srcMAC := "01:23:45:67:89:ab"
 	dstMAC := "02:33:45:67:89:ab"
@@ -37,21 +28,21 @@ func (s *MonitorSuite) TestDissectSummary(c *C) {
 
 	summary := GetDissectSummary(packetData)
 
-	c.Assert(summary.Ethernet, Not(Equals), "")
-	c.Assert(summary.IPv4, Not(Equals), "")
-	c.Assert(summary.TCP, Not(Equals), "")
+	require.NotEqual(t, "", summary.Ethernet)
+	require.NotEqual(t, "", summary.IPv4)
+	require.NotEqual(t, "", summary.TCP)
 
-	c.Assert(summary.L2.Src, Equals, srcMAC)
-	c.Assert(summary.L2.Dst, Equals, dstMAC)
+	require.Equal(t, srcMAC, summary.L2.Src)
+	require.Equal(t, dstMAC, summary.L2.Dst)
 
-	c.Assert(summary.L3.Src, Equals, srcIP)
-	c.Assert(summary.L3.Dst, Equals, dstIP)
+	require.Equal(t, srcIP, summary.L3.Src)
+	require.Equal(t, dstIP, summary.L3.Dst)
 
-	c.Assert(summary.L4.Src, Equals, sport)
-	c.Assert(summary.L4.Dst, Equals, dport)
+	require.Equal(t, sport, summary.L4.Src)
+	require.Equal(t, dport, summary.L4.Dst)
 }
 
-func (s *MonitorSuite) TestConnectionSummary(c *C) {
+func TestConnectionSummaryTcp(t *testing.T) {
 	srcIP := "1.2.3.4"
 	dstIP := "5.6.7.8"
 
@@ -68,5 +59,22 @@ func (s *MonitorSuite) TestConnectionSummary(c *C) {
 		net.JoinHostPort(srcIP, sport),
 		net.JoinHostPort(dstIP, dport),
 		"tcp SYN")
-	c.Assert(summary, Equals, expect)
+	require.Equal(t, expect, summary)
+}
+
+func TestConnectionSummaryIcmp(t *testing.T) {
+	srcIP := "1.2.3.4"
+	dstIP := "5.6.7.8"
+
+	// Generated in scapy:
+	// Ether(src="01:23:45:67:89:ab", dst="02:33:45:67:89:ab")/IP(src="1.2.3.4",dst="5.6.7.8")/ICMP(type=3, code=1)
+	packetData := []byte{2, 51, 69, 103, 137, 171, 1, 35, 69, 103, 137, 171, 8, 0, 69, 0, 0, 28, 0, 1, 0, 0, 64, 1, 106, 205, 1, 2, 3, 4, 5, 6, 7, 8, 3, 1, 252, 254, 0, 0, 0, 0}
+
+	summary := GetConnectionSummary(packetData)
+
+	expect := fmt.Sprintf("%s -> %s %s",
+		srcIP,
+		dstIP,
+		"icmp DestinationUnreachable(Host)")
+	require.Equal(t, expect, summary)
 }

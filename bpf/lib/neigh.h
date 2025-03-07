@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
 
-#ifndef __LIB_NEIGH_H_
-#define __LIB_NEIGH_H_
+#pragma once
 
 #include <bpf/ctx/ctx.h>
 #include <bpf/api.h>
@@ -17,6 +16,7 @@ struct {
 	__type(value, union macaddr);	/* hw addr */
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 	__uint(max_entries, NODEPORT_NEIGH6_SIZE);
+	__uint(map_flags, LRU_MEM_FLAVOR);
 } NODEPORT_NEIGH6 __section_maps_btf;
 
 static __always_inline int neigh_record_ip6(struct __ctx_buff *ctx)
@@ -60,6 +60,7 @@ struct {
 	__type(value, union macaddr);	/* hw addr */
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
 	__uint(max_entries, NODEPORT_NEIGH4_SIZE);
+	__uint(map_flags, LRU_MEM_FLAVOR);
 } NODEPORT_NEIGH4 __section_maps_btf;
 
 static __always_inline int neigh_record_ip4(struct __ctx_buff *ctx)
@@ -95,4 +96,3 @@ neigh_lookup_ip4(const __be32 *addr __maybe_unused)
 	return NULL;
 }
 #endif /* ENABLE_NODEPORT && ENABLE_IPV4 */
-#endif /* __LIB_NEIGH_H_ */

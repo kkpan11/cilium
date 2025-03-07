@@ -5,7 +5,6 @@ package v2
 
 import (
 	"fmt"
-	"reflect"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -18,6 +17,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +deepequal-gen:private-method=true
 // +kubebuilder:resource:categories={cilium,ciliumpolicy},singular="ciliumclusterwidenetworkpolicy",path="ciliumclusterwidenetworkpolicies",scope="Cluster",shortName={ccnp}
+// +kubebuilder:printcolumn:JSONPath=".status.conditions[?(@.type=='Valid')].status",name="Valid",type=string
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 
@@ -52,24 +52,6 @@ func (in *CiliumClusterwideNetworkPolicy) DeepEqual(other *CiliumClusterwideNetw
 	return objectMetaDeepEqual(in.ObjectMeta, other.ObjectMeta) && in.deepEqual(other)
 }
 
-// GetPolicyStatus returns the CiliumClusterwideNetworkPolicyNodeStatus corresponding to
-// nodeName in the provided CiliumClusterwideNetworkPolicy. If Nodes within the rule's
-// Status is nil, returns an empty CiliumClusterwideNetworkPolicyNodeStatus.
-func (r *CiliumClusterwideNetworkPolicy) GetPolicyStatus(nodeName string) CiliumNetworkPolicyNodeStatus {
-	if r.Status.Nodes == nil {
-		return CiliumNetworkPolicyNodeStatus{}
-	}
-	return r.Status.Nodes[nodeName]
-}
-
-// SetPolicyStatus sets the given policy status for the given nodes' map.
-func (r *CiliumClusterwideNetworkPolicy) SetPolicyStatus(nodeName string, cnpns CiliumNetworkPolicyNodeStatus) {
-	if r.Status.Nodes == nil {
-		r.Status.Nodes = map[string]CiliumNetworkPolicyNodeStatus{}
-	}
-	r.Status.Nodes[nodeName] = cnpns
-}
-
 // SetDerivedPolicyStatus set the derivative policy status for the given
 // derivative policy name.
 func (r *CiliumClusterwideNetworkPolicy) SetDerivedPolicyStatus(derivativePolicyName string, status CiliumNetworkPolicyNodeStatus) {
@@ -77,16 +59,6 @@ func (r *CiliumClusterwideNetworkPolicy) SetDerivedPolicyStatus(derivativePolicy
 		r.Status.DerivativePolicies = map[string]CiliumNetworkPolicyNodeStatus{}
 	}
 	r.Status.DerivativePolicies[derivativePolicyName] = status
-}
-
-// AnnotationsEquals returns true if ObjectMeta.Annotations of each
-// CiliumClusterwideNetworkPolicy are equivalent (i.e., they contain equivalent key-value
-// pairs).
-func (r *CiliumClusterwideNetworkPolicy) AnnotationsEquals(o *CiliumClusterwideNetworkPolicy) bool {
-	if o == nil {
-		return r == nil
-	}
-	return reflect.DeepEqual(r.ObjectMeta.Annotations, o.ObjectMeta.Annotations)
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

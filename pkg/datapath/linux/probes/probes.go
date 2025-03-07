@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,12 +20,16 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/features"
+	"github.com/cilium/ebpf/link"
+	"github.com/gopacket/gopacket"
+	"github.com/gopacket/gopacket/layers"
 	"golang.org/x/sys/unix"
 
 	"github.com/cilium/cilium/pkg/command/exec"
 	"github.com/cilium/cilium/pkg/defaults"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/netns"
 )
 
 var (
@@ -59,6 +65,9 @@ func init() {
 	}
 }
 
+// ErrNotSupported indicates that a feature is not supported by the current kernel.
+var ErrNotSupported = errors.New("not supported")
+
 // KernelParam is a type based on string which represents CONFIG_* kernel
 // parameters which usually have values "y", "n" or "m".
 type KernelParam string
@@ -86,7 +95,7 @@ type ProgramHelper struct {
 }
 
 type miscFeatures struct {
-	HaveLargeInsnLimit bool
+	HaveFibIfindex bool
 }
 
 type FeatureProbes struct {
@@ -335,34 +344,6 @@ func (p *ProbeManager) KernelConfigAvailable() bool {
 	return true
 }
 
-// HaveMapType is a wrapper around features.HaveMapType() to check if a certain
-// BPF map type is supported by the kernel.
-// On unexpected probe results this function will terminate with log.Fatal().
-func HaveMapType(mt ebpf.MapType) error {
-	err := features.HaveMapType(mt)
-	if errors.Is(err, ebpf.ErrNotSupported) {
-		return err
-	}
-	if err != nil {
-		log.WithError(err).WithField("maptype", mt).Fatal("failed to probe MapType")
-	}
-	return nil
-}
-
-// HaveProgramType is a wrapper around features.HaveProgramType() to check
-// if a certain BPF program type is supported by the kernel.
-// On unexpected probe results this function will terminate with log.Fatal().
-func HaveProgramType(pt ebpf.ProgramType) error {
-	err := features.HaveProgramType(pt)
-	if errors.Is(err, ebpf.ErrNotSupported) {
-		return err
-	}
-	if err != nil {
-		log.WithError(err).WithField("programtype", pt).Fatal("failed to probe ProgramType")
-	}
-	return nil
-}
-
 // HaveProgramHelper is a wrapper around features.HaveProgramHelper() to
 // check if a certain BPF program/helper copmbination is supported by the kernel.
 // On unexpected probe results this function will terminate with log.Fatal().
@@ -405,6 +386,20 @@ func HaveBoundedLoops() error {
 	return nil
 }
 
+// HaveFibIfindex checks if kernel has d1c362e1dd68 ("bpf: Always return target
+// ifindex in bpf_fib_lookup") which is 5.10+. This got merged in the same kernel
+// as the new redirect helpers.
+func HaveFibIfindex() error {
+	return features.HaveProgramHelper(ebpf.SchedCLS, asm.FnRedirectPeer)
+}
+
+// HaveWriteableQueueMapping checks if kernel has 74e31ca850c1 ("bpf: add
+// skb->queue_mapping write access from tc clsact") which is 5.1+. This got merged
+// in the same kernel as the bpf_skb_ecn_set_ce() helper.
+func HaveWriteableQueueMapping() error {
+	return features.HaveProgramHelper(ebpf.SchedCLS, asm.FnSkbEcnSetCe)
+}
+
 // HaveV2ISA is a wrapper around features.HaveV2ISA() to check if the kernel
 // supports the V2 ISA.
 // On unexpected probe results this function will terminate with log.Fatal().
@@ -430,6 +425,211 @@ func HaveV3ISA() error {
 	if err != nil {
 		log.WithError(err).Fatal("failed to probe V3 ISA")
 	}
+	return nil
+}
+
+// HaveTCX returns nil if the running kernel supports attaching bpf programs to
+// tcx hooks.
+var HaveTCX = sync.OnceValue(func() error {
+	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.SchedCLS,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R0, 0),
+			asm.Return(),
+		},
+		License: "Apache-2.0",
+	})
+	if err != nil {
+		return err
+	}
+	defer prog.Close()
+
+	ns, err := netns.New()
+	if err != nil {
+		return fmt.Errorf("create netns: %w", err)
+	}
+	defer ns.Close()
+
+	// link.AttachTCX already performs its own feature detection and returns
+	// ebpf.ErrNotSupported if the host kernel doesn't have tcx.
+	return ns.Do(func() error {
+		l, err := link.AttachTCX(link.TCXOptions{
+			Program:   prog,
+			Attach:    ebpf.AttachTCXIngress,
+			Interface: 1, // lo
+			Anchor:    link.Tail(),
+		})
+		if err != nil {
+			return fmt.Errorf("creating link: %w", err)
+		}
+		if err := l.Close(); err != nil {
+			return fmt.Errorf("closing link: %w", err)
+		}
+
+		return nil
+	})
+})
+
+// HaveNetkit returns nil if the running kernel supports attaching bpf programs
+// to netkit devices.
+var HaveNetkit = sync.OnceValue(func() error {
+	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Type: ebpf.SchedCLS,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R0, 0),
+			asm.Return(),
+		},
+		License: "Apache-2.0",
+	})
+	if err != nil {
+		return err
+	}
+	defer prog.Close()
+
+	ns, err := netns.New()
+	if err != nil {
+		return fmt.Errorf("create netns: %w", err)
+	}
+	defer ns.Close()
+
+	return ns.Do(func() error {
+		l, err := link.AttachNetkit(link.NetkitOptions{
+			Program:   prog,
+			Attach:    ebpf.AttachNetkitPrimary,
+			Interface: math.MaxInt,
+		})
+		// We rely on this being checked during the syscall. With
+		// an otherwise correct payload we expect ENODEV here as
+		// an indication that the feature is present.
+		if errors.Is(err, unix.ENODEV) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("creating link: %w", err)
+		}
+		if err := l.Close(); err != nil {
+			return fmt.Errorf("closing link: %w", err)
+		}
+
+		return fmt.Errorf("unexpected success: %w", err)
+	})
+})
+
+// HaveSKBAdjustRoomL2RoomMACSupport tests whether the kernel supports the `bpf_skb_adjust_room` helper
+// with the `BPF_ADJ_ROOM_MAC` mode. To do so, we create a program that requests the passed in SKB
+// to be expanded by 20 bytes. The helper checks the `mode` argument and will return -ENOSUPP if
+// the mode is unknown. Otherwise it should resize the SKB by 20 bytes and return 0.
+func HaveSKBAdjustRoomL2RoomMACSupport() (err error) {
+	defer func() {
+		if err != nil && !errors.Is(err, ebpf.ErrNotSupported) {
+			log.WithError(err).Fatal("failed to probe for bpf_skb_adjust_room L2 room MAC support")
+		}
+	}()
+
+	progSpec := &ebpf.ProgramSpec{
+		Name:    "adjust_mac_room",
+		Type:    ebpf.SchedCLS,
+		License: "GPL",
+	}
+	progSpec.Instructions = asm.Instructions{
+		asm.Mov.Imm(asm.R2, 20), // len_diff
+		asm.Mov.Imm(asm.R3, 1),  // mode: BPF_ADJ_ROOM_MAC
+		asm.Mov.Imm(asm.R4, 0),  // flags: 0
+		asm.FnSkbAdjustRoom.Call(),
+		asm.Return(),
+	}
+	prog, err := ebpf.NewProgram(progSpec)
+	if err != nil {
+		return err
+	}
+	defer prog.Close()
+
+	// This is a Eth + IPv4 + UDP + data packet. The helper relies on a valid packet being passed in
+	// since it wants to know offsets of the different layers.
+	buf := gopacket.NewSerializeBuffer()
+	err = gopacket.SerializeLayers(buf, gopacket.SerializeOptions{},
+		&layers.Ethernet{
+			DstMAC:       net.HardwareAddr{0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+			SrcMAC:       net.HardwareAddr{0x0e, 0xf5, 0x16, 0x3d, 0x6b, 0xab},
+			EthernetType: layers.EthernetTypeIPv4,
+		},
+		&layers.IPv4{
+			Version:  4,
+			IHL:      5,
+			Length:   49,
+			Id:       0xCECB,
+			TTL:      64,
+			Protocol: layers.IPProtocolUDP,
+			SrcIP:    net.IPv4(0xc0, 0xa8, 0xb2, 0x56),
+			DstIP:    net.IPv4(0xc0, 0xa8, 0xb2, 0xff),
+		},
+		&layers.UDP{
+			SrcPort: 23939,
+			DstPort: 32412,
+		},
+		gopacket.Payload("M-SEARCH * HTTP/1.1\x0d\x0a"),
+	)
+	if err != nil {
+		return fmt.Errorf("craft packet: %w", err)
+	}
+
+	ret, _, err := prog.Test(buf.Bytes())
+	if err != nil {
+		return err
+	}
+	if ret != 0 {
+		return ebpf.ErrNotSupported
+	}
+	return nil
+}
+
+// HaveDeadCodeElim tests whether the kernel supports dead code elimination.
+func HaveDeadCodeElim() error {
+	spec := ebpf.ProgramSpec{
+		Name: "test",
+		Type: ebpf.XDP,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R1, 0),
+			asm.JEq.Imm(asm.R1, 1, "else"),
+			asm.Mov.Imm(asm.R0, 2),
+			asm.Ja.Label("end"),
+			asm.Mov.Imm(asm.R0, 3).WithSymbol("else"),
+			asm.Return().WithSymbol("end"),
+		},
+	}
+
+	prog, err := ebpf.NewProgram(&spec)
+	if err != nil {
+		return fmt.Errorf("loading program: %w", err)
+	}
+
+	info, err := prog.Info()
+	if err != nil {
+		return fmt.Errorf("get prog info: %w", err)
+	}
+	infoInst, err := info.Instructions()
+	if err != nil {
+		return fmt.Errorf("get instructions: %w", err)
+	}
+
+	for _, inst := range infoInst {
+		if inst.OpCode.Class().IsJump() && inst.OpCode.JumpOp() != asm.Exit {
+			return fmt.Errorf("Jump instruction found in the final program, no dead code elimination performed")
+		}
+	}
+
+	return nil
+}
+
+// HaveIPv6Support tests whether kernel can open an IPv6 socket. This will
+// also implicitly auto-load IPv6 kernel module if available and not yet
+// loaded.
+func HaveIPv6Support() error {
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+	if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
+		return ErrNotSupported
+	}
+	unix.Close(fd)
 	return nil
 }
 
@@ -482,13 +682,10 @@ func ExecuteHeaderProbes() *FeatureProbes {
 		// common probes
 		{ebpf.CGroupSock, asm.FnGetNetnsCookie},
 		{ebpf.CGroupSockAddr, asm.FnGetNetnsCookie},
-		{ebpf.CGroupSockAddr, asm.FnGetSocketCookie},
 		{ebpf.CGroupSock, asm.FnJiffies64},
 		{ebpf.CGroupSockAddr, asm.FnJiffies64},
 		{ebpf.SchedCLS, asm.FnJiffies64},
 		{ebpf.XDP, asm.FnJiffies64},
-		{ebpf.CGroupSockAddr, asm.FnSkLookupTcp},
-		{ebpf.CGroupSockAddr, asm.FnSkLookupUdp},
 		{ebpf.CGroupSockAddr, asm.FnGetCurrentCgroupId},
 		{ebpf.CGroupSock, asm.FnSetRetval},
 		{ebpf.SchedCLS, asm.FnRedirectNeigh},
@@ -496,17 +693,18 @@ func ExecuteHeaderProbes() *FeatureProbes {
 
 		// skb related probes
 		{ebpf.SchedCLS, asm.FnSkbChangeTail},
-		{ebpf.SchedCLS, asm.FnFibLookup},
 		{ebpf.SchedCLS, asm.FnCsumLevel},
 
 		// xdp related probes
-		{ebpf.XDP, asm.FnFibLookup},
+		{ebpf.XDP, asm.FnXdpGetBuffLen},
+		{ebpf.XDP, asm.FnXdpLoadBytes},
+		{ebpf.XDP, asm.FnXdpStoreBytes},
 	}
 	for _, ph := range progHelpers {
 		probes.ProgramHelpers[ph] = (HaveProgramHelper(ph.Program, ph.Helper) == nil)
 	}
 
-	probes.Misc.HaveLargeInsnLimit = (HaveLargeInstructionLimit() == nil)
+	probes.Misc.HaveFibIfindex = (HaveFibIfindex() == nil)
 
 	return &probes
 }
@@ -516,21 +714,14 @@ func writeCommonHeader(writer io.Writer, probes *FeatureProbes) error {
 	features := map[string]bool{
 		"HAVE_NETNS_COOKIE": probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnGetNetnsCookie}] &&
 			probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetNetnsCookie}],
-		"HAVE_SOCKET_COOKIE": probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetSocketCookie}],
 		"HAVE_JIFFIES": probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnJiffies64}] &&
 			probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnJiffies64}] &&
 			probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnJiffies64}] &&
 			probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnJiffies64}],
-		"HAVE_SOCKET_LOOKUP": probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnSkLookupTcp}] &&
-			probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnSkLookupUdp}],
-		"HAVE_CGROUP_ID":        probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetCurrentCgroupId}],
-		"HAVE_LARGE_INSN_LIMIT": probes.Misc.HaveLargeInsnLimit,
-		"HAVE_SET_RETVAL":       probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnSetRetval}],
-		"HAVE_FIB_NEIGH":        probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnRedirectNeigh}],
-		// Check if kernel has d1c362e1dd68 ("bpf: Always return target ifindex
-		// in bpf_fib_lookup") which is 5.10+. This got merged in the same kernel
-		// as the new redirect helpers.
-		"HAVE_FIB_IFINDEX": probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnRedirectPeer}],
+		"HAVE_CGROUP_ID":   probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSockAddr, asm.FnGetCurrentCgroupId}],
+		"HAVE_SET_RETVAL":  probes.ProgramHelpers[ProgramHelper{ebpf.CGroupSock, asm.FnSetRetval}],
+		"HAVE_FIB_NEIGH":   probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnRedirectNeigh}],
+		"HAVE_FIB_IFINDEX": probes.Misc.HaveFibIfindex,
 	}
 
 	return writeFeatureHeader(writer, features, true)
@@ -539,9 +730,7 @@ func writeCommonHeader(writer io.Writer, probes *FeatureProbes) error {
 // writeSkbHeader defines macros for bpf/include/bpf/features_skb.h
 func writeSkbHeader(writer io.Writer, probes *FeatureProbes) error {
 	featuresSkb := map[string]bool{
-		"HAVE_CHANGE_TAIL": probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnSkbChangeTail}],
-		"HAVE_FIB_LOOKUP":  probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnFibLookup}],
-		"HAVE_CSUM_LEVEL":  probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnCsumLevel}],
+		"HAVE_CSUM_LEVEL": probes.ProgramHelpers[ProgramHelper{ebpf.SchedCLS, asm.FnCsumLevel}],
 	}
 
 	return writeFeatureHeader(writer, featuresSkb, false)
@@ -550,7 +739,9 @@ func writeSkbHeader(writer io.Writer, probes *FeatureProbes) error {
 // writeXdpHeader defines macros for bpf/include/bpf/features_xdp.h
 func writeXdpHeader(writer io.Writer, probes *FeatureProbes) error {
 	featuresXdp := map[string]bool{
-		"HAVE_FIB_LOOKUP": probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnFibLookup}],
+		"HAVE_XDP_GET_BUFF_LEN": probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnXdpGetBuffLen}],
+		"HAVE_XDP_LOAD_BYTES":   probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnXdpLoadBytes}],
+		"HAVE_XDP_STORE_BYTES":  probes.ProgramHelpers[ProgramHelper{ebpf.XDP, asm.FnXdpStoreBytes}],
 	}
 
 	return writeFeatureHeader(writer, featuresXdp, false)
@@ -569,5 +760,29 @@ func writeFeatureHeader(writer io.Writer, features map[string]bool, common bool)
 		return fmt.Errorf("could not write template: %w", err)
 	}
 
+	return nil
+}
+
+// HaveBatchAPI checks if kernel supports batched bpf map lookup API.
+func HaveBatchAPI() error {
+	spec := ebpf.MapSpec{
+		Type:       ebpf.LRUHash,
+		KeySize:    1,
+		ValueSize:  1,
+		MaxEntries: 2,
+	}
+	m, err := ebpf.NewMapWithOptions(&spec, ebpf.MapOptions{})
+	if err != nil {
+		return ErrNotSupported
+	}
+	defer m.Close()
+	var cursor ebpf.MapBatchCursor
+	_, err = m.BatchLookup(&cursor, []byte{0}, []byte{0}, nil) // only do one batched lookup
+	if err != nil {
+		if errors.Is(err, ebpf.ErrNotSupported) {
+			return ErrNotSupported
+		}
+		return nil
+	}
 	return nil
 }

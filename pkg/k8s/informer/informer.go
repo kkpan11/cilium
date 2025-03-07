@@ -4,17 +4,19 @@
 package informer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	k8sRuntime "k8s.io/apimachinery/pkg/runtime"
 	utilRuntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 
+	"github.com/cilium/cilium/pkg/k8s/watchers/resources"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "k8s")
@@ -22,7 +24,7 @@ var log = logging.DefaultLogger.WithField(logfields.LogSubsys, "k8s")
 func init() {
 	utilRuntime.PanicHandlers = append(
 		utilRuntime.PanicHandlers,
-		func(r interface{}) {
+		func(_ context.Context, r interface{}) {
 			// from k8s library
 			if err, ok := r.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 				// honor the http.ErrAbortHandler sentinel panic value:
@@ -36,54 +38,60 @@ func init() {
 	)
 }
 
-type ConvertFunc func(obj interface{}) interface{}
+type privateRunner struct {
+	cache.Controller
+	cacheMutationDetector cache.MutationDetector
+}
 
-// NewInformer is a copy of k8s.io/client-go/tools/cache/NewInformer with a new
-// argument which converts an object into another object that can be stored in
-// the local cache.
+func (p *privateRunner) Run(stopCh <-chan struct{}) {
+	go p.cacheMutationDetector.Run(stopCh)
+	p.Controller.Run(stopCh)
+}
+
+// NewInformer is a copy of k8s.io/client-go/tools/cache/NewInformer includes the default cache MutationDetector.
 func NewInformer(
 	lw cache.ListerWatcher,
 	objType k8sRuntime.Object,
 	resyncPeriod time.Duration,
 	h cache.ResourceEventHandler,
-	convertFunc ConvertFunc,
+	transformer cache.TransformFunc,
 ) (cache.Store, cache.Controller) {
 	// This will hold the client state, as we know it.
 	clientState := cache.NewStore(cache.DeletionHandlingMetaNamespaceKeyFunc)
 
-	return clientState, NewInformerWithStore(lw, objType, resyncPeriod, h, convertFunc, clientState)
+	return clientState, NewInformerWithStore(lw, objType, resyncPeriod, h, transformer, clientState)
 }
 
-// NewIndexerInformer is a copy of k8s.io/client-go/tools/cache/NewIndexerInformer with a new
-// argument which converts an object into another object that can be stored in
-// the local cache.
+// NewIndexerInformer is a copy of k8s.io/client-go/tools/cache/NewIndexerInformer but includes the
+// default cache MutationDetector.
 func NewIndexerInformer(
 	lw cache.ListerWatcher,
 	objType k8sRuntime.Object,
 	resyncPeriod time.Duration,
 	h cache.ResourceEventHandler,
-	convertFunc ConvertFunc,
+	transformer cache.TransformFunc,
 	indexers cache.Indexers,
 ) (cache.Indexer, cache.Controller) {
 	clientState := cache.NewIndexer(cache.DeletionHandlingMetaNamespaceKeyFunc, indexers)
-	return clientState, NewInformerWithStore(lw, objType, resyncPeriod, h, convertFunc, clientState)
+	return clientState, NewInformerWithStore(lw, objType, resyncPeriod, h, transformer, clientState)
 }
 
-// NewInformerWithStore uses the same arguments as NewInformer for which a
-// caller can also set a cache.Store.
+// NewInformerWithStore uses the same arguments as NewInformer for which a caller can also set a
+// cache.Store and includes the default cache MutationDetector.
 func NewInformerWithStore(
 	lw cache.ListerWatcher,
 	objType k8sRuntime.Object,
 	resyncPeriod time.Duration,
 	h cache.ResourceEventHandler,
-	convertFunc ConvertFunc,
+	transformer cache.TransformFunc,
 	clientState cache.Store,
 ) cache.Controller {
 
 	// This will hold incoming changes. Note how we pass clientState in as a
 	// KeyLister, that way resync operations will result in the correct set
 	// of update/delete deltas.
-	fifo := cache.NewDeltaFIFO(cache.MetaNamespaceKeyFunc, clientState)
+	opts := cache.DeltaFIFOOptions{KeyFunction: cache.MetaNamespaceKeyFunc, KnownObjects: clientState}
+	fifo := cache.NewDeltaFIFOWithOptions(opts)
 
 	cacheMutationDetector := cache.NewCacheMutationDetector(fmt.Sprintf("%T", objType))
 
@@ -94,16 +102,22 @@ func NewInformerWithStore(
 		FullResyncPeriod: resyncPeriod,
 		RetryOnError:     false,
 
-		Process: func(obj interface{}) error {
+		Process: func(obj interface{}, isInInitialList bool) error {
 			// from oldest to newest
 			for _, d := range obj.(cache.Deltas) {
 
 				var obj interface{}
-				if convertFunc != nil {
-					obj = convertFunc(d.Object)
+				if transformer != nil {
+					var err error
+					if obj, err = transformer(d.Object); err != nil {
+						return err
+					}
 				} else {
 					obj = d.Object
 				}
+
+				// Deduplicate the strings in the object metadata to reduce memory consumption.
+				resources.DedupMetadata(obj)
 
 				// In CI we detect if the objects were modified and panic
 				// this is a no-op in production environments.
@@ -120,7 +134,7 @@ func NewInformerWithStore(
 						if err := clientState.Add(obj); err != nil {
 							return err
 						}
-						h.OnAdd(obj)
+						h.OnAdd(obj, isInInitialList)
 					}
 				case cache.Deleted:
 					if err := clientState.Delete(obj); err != nil {
@@ -132,5 +146,8 @@ func NewInformerWithStore(
 			return nil
 		},
 	}
-	return cache.New(cfg)
+	return &privateRunner{
+		Controller:            cache.New(cfg),
+		cacheMutationDetector: cacheMutationDetector,
+	}
 }
