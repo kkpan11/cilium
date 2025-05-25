@@ -12,14 +12,14 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.14
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.30
-	github.com/aws/aws-sdk-go-v2/service/ec2 v1.217.0
+	github.com/aws/aws-sdk-go-v2/service/ec2 v1.222.0
 	github.com/aws/smithy-go v1.22.3
 	github.com/blang/semver/v4 v4.0.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/cilium/charts v0.0.0-20250414205453-f7c721a82d0e
 	github.com/cilium/coverbee v0.3.3-0.20240723084546-664438750fce
 	github.com/cilium/dns v1.1.51-0.20240603182237-af788769786a
-	github.com/cilium/ebpf v0.18.0
+	github.com/cilium/ebpf v0.18.1-0.20250512082336-cef9c0a0186a
 	github.com/cilium/endpointslice-controller v0.0.0-20250410163339-ffb33e27879c
 	github.com/cilium/fake v0.7.0
 	github.com/cilium/hive v0.0.0-20250328192914-7f3c86c9c25e

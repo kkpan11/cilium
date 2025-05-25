@@ -90,8 +90,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.34 h1:SZwFm17ZUNNg5Np0io
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.34/go.mod h1:dFZsC0BLo346mvKQLWmoJxT+Sjp+qcVR1tRVHQGOH9Q=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3 h1:bIqFDwgGXXN1Kpp99pDOdKMTTb5d2KyU5X/BZxjOkRo=
 github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3/go.mod h1:H5O/EsxDWyU+LP/V8i5sm8cxoZgc2fdNR9bxlOFrQTo=
-github.com/aws/aws-sdk-go-v2/service/ec2 v1.217.0 h1:Bzfj/H0nvEcdqnt5TVL7X0wBlwvPe0OXDt7UqcQmr9Q=
-github.com/aws/aws-sdk-go-v2/service/ec2 v1.217.0/go.mod h1:ouvGEfHbLaIlWwpDpOVWPWR+YwO0HDv3vm5tYLq8ImY=
+github.com/aws/aws-sdk-go-v2/service/ec2 v1.222.0 h1:qPVuEWzRvc/Z8UA0CKG4QczxORbgYTbWwlviUAmVmgs=
+github.com/aws/aws-sdk-go-v2/service/ec2 v1.222.0/go.mod h1:ouvGEfHbLaIlWwpDpOVWPWR+YwO0HDv3vm5tYLq8ImY=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.3 h1:eAh2A4b5IzM/lum78bZ590jy36+d/aFLgKF/4Vd1xPE=
 github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.3/go.mod h1:0yKJC/kb8sAnmlYa6Zs3QVYqaC8ug2AbnNChv5Ox3uA=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.15 h1:dM9/92u2F1JbDaGooxTq18wmmFzbJRfXfVfy96/1CXM=
@@ -136,8 +136,8 @@ github.com/cilium/deepequal-gen v0.0.0-20241016021505-f57df2fe2e62 h1:MOWY9eqnrr
 github.com/cilium/deepequal-gen v0.0.0-20241016021505-f57df2fe2e62/go.mod h1:9EU8oWNwEP6f98xJz/YjWw7yOLHK7p90MKmaPu1wBcE=
 github.com/cilium/dns v1.1.51-0.20240603182237-af788769786a h1:PRGN7B+72mj3OtLL2DM3F/9jp+ItgqgNS7mecgCmwsQ=
 github.com/cilium/dns v1.1.51-0.20240603182237-af788769786a/go.mod h1:/7LC2GOgyXJ7maupZlaVIumYQiGPIgllSf6mA9sg6RU=
-github.com/cilium/ebpf v0.18.0 h1:OsSwqS4y+gQHxaKgg2U/+Fev834kdnsQbtzRnbVC6Gs=
-github.com/cilium/ebpf v0.18.0/go.mod h1:vmsAT73y4lW2b4peE+qcOqw6MxvWQdC+LiU5gd/xyo4=
+github.com/cilium/ebpf v0.18.1-0.20250512082336-cef9c0a0186a h1:DUvF5HX4YTTCANsAv7pKJUc0aNr+RcX7+eUIkHvNw9s=
+github.com/cilium/ebpf v0.18.1-0.20250512082336-cef9c0a0186a/go.mod h1:fLCgMo3l8tZmAdM3B2XqdFzXBpwkcSTroaVqN08OWVY=
 github.com/cilium/endpointslice v0.29.4-0.20240409195643-982ad68ab7ba h1:Ddc5e+pz0/nY0XiAEW/UcIlvnaHACSuF77ePyMNX510=
 github.com/cilium/endpointslice v0.29.4-0.20240409195643-982ad68ab7ba/go.mod h1:9MPoeojWVEBLFnioKXTvRoqGWTs9Dt252r1ACFsi8K8=
 github.com/cilium/endpointslice-controller v0.0.0-20250410163339-ffb33e27879c h1:+/SPdDam5Mha4QzOByEoBE7hfq8aUxnioItyKM48U6M=
