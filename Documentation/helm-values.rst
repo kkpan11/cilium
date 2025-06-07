@@ -143,7 +143,7 @@
    * - :spelling:ignore:`authentication.mutual.spire.install.initImage`
      - init container image of SPIRE agent and server
      - object
-     - ``{"digest":"sha256:37f7b378a29ceb4c551b1b5582e27747b855bbfaa73fa11914fe0df028dc581f","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.37.0","useDigest":true}``
+     - ``{"digest":"sha256:f85340bf132ae937d2c2a763b8335c9bab35d6e8293f70f606b9c6178d84f42b","override":null,"pullPolicy":"Always","repository":"docker.io/library/busybox","tag":"1.37.0","useDigest":true}``
    * - :spelling:ignore:`authentication.mutual.spire.install.namespace`
      - SPIRE namespace to install into
      - string
@@ -467,7 +467,7 @@
    * - :spelling:ignore:`certgen`
      - Configure certificate generation for Hubble integration. If hubble.tls.auto.method=cronJob, these values are used for the Kubernetes CronJob which will be scheduled regularly to (re)generate any certificates not provided manually.
      - object
-     - ``{"affinity":{},"annotations":{"cronJob":{},"job":{}},"extraVolumeMounts":[],"extraVolumes":[],"generateCA":true,"image":{"digest":"sha256:cb3b1480f404489cbf0dbb9ac4576f44392532800180a4d6260ab430b4cbaedc","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.2.3","useDigest":true},"nodeSelector":{},"podLabels":{},"priorityClassName":"","resources":{},"tolerations":[],"ttlSecondsAfterFinished":1800}``
+     - ``{"affinity":{},"annotations":{"cronJob":{},"job":{}},"extraVolumeMounts":[],"extraVolumes":[],"generateCA":true,"image":{"digest":"sha256:de7b97b1d19a34b674d0c4bc1da4db999f04ae355923a9a994ac3a81e1a1b5ff","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/certgen","tag":"v0.2.4","useDigest":true},"nodeSelector":{},"podLabels":{},"priorityClassName":"","resources":{},"tolerations":[],"ttlSecondsAfterFinished":1800}``
    * - :spelling:ignore:`certgen.affinity`
      - Affinity for certgen
      - object
@@ -617,7 +617,7 @@
      - object
      - ``{"digest":"","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/clustermesh-apiserver-ci","tag":"latest","useDigest":false}``
    * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.enabled`
-     - Enable KVStoreMesh. KVStoreMesh caches the information retrieved from the remote clusters in the local etcd instance.
+     - Enable KVStoreMesh. KVStoreMesh caches the information retrieved from the remote clusters in the local etcd instance (deprecated - KVStoreMesh will always be enabled once the option is removed).
      - bool
      - ``true``
    * - :spelling:ignore:`clustermesh.apiserver.kvstoremesh.extraArgs`
@@ -932,6 +932,10 @@
      - The maximum number of clusters to support in a ClusterMesh. This value cannot be changed on running clusters, and all clusters in a ClusterMesh must be configured with the same value. Values > 255 will decrease the maximum allocatable cluster-local identities. Supported values are 255 and 511.
      - int
      - ``255``
+   * - :spelling:ignore:`clustermesh.policyDefaultLocalCluster`
+     - Control whether policy rules assume by default the local cluster if not explicitly selected
+     - bool
+     - ``false``
    * - :spelling:ignore:`clustermesh.useAPIServer`
      - Deploy clustermesh-apiserver for clustermesh
      - bool
@@ -1164,10 +1168,6 @@
      - Enable Non-Default-Deny policies
      - bool
      - ``true``
-   * - :spelling:ignore:`enableRuntimeDeviceDetection`
-     - Enables experimental support for the detection of new and removed datapath devices. When devices change the eBPF datapath is reloaded and services updated. If "devices" is set then only those devices, or devices matching a wildcard will be considered.  This option has been deprecated and is a no-op.
-     - bool
-     - ``true``
    * - :spelling:ignore:`enableXTSocketFallback`
      - Enables the fallback compatibility solution for when the xt_socket kernel module is missing and it is needed for the datapath L7 redirection to work properly. See documentation for details on when this can be disabled: https://docs.cilium.io/en/stable/operations/system_requirements/#linux-kernel.
      - bool
@@ -1367,7 +1367,7 @@
    * - :spelling:ignore:`envoy.image`
      - Envoy container image.
      - object
-     - ``{"digest":"sha256:770ae69b0332237c2a90d87d91109e75434abf0ca1ec9f3982a28daee469d4b8","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.33.3-1746785339-971577e505e5640c1642b4167205cfeaf4647ed1","useDigest":true}``
+     - ``{"digest":"sha256:c4fe15f10b612c845709eda05d449e2735a9a7dc9b799e858d31e6ddac332b29","override":null,"pullPolicy":"Always","repository":"quay.io/cilium/cilium-envoy","tag":"v1.33.3-1749082895-be938e41a8b374f8084ecbf1d6883510e4059620","useDigest":true}``
    * - :spelling:ignore:`envoy.initialFetchTimeoutSeconds`
      - Time in seconds after which the initial fetch on an xDS stream is considered timed out
      - int
@@ -1584,10 +1584,6 @@
      - Enable use of TLS/SSL for connectivity to etcd.
      - bool
      - ``false``
-   * - :spelling:ignore:`externalIPs.enabled`
-     - Enable ExternalIPs service support.
-     - bool
-     - ``false``
    * - :spelling:ignore:`extraArgs`
      - Additional agent container arguments.
      - list
@@ -1698,10 +1694,6 @@
      - ``{"enabled":false}``
    * - :spelling:ignore:`hostFirewall.enabled`
      - Enables the enforcement of host policies in the eBPF datapath.
-     - bool
-     - ``false``
-   * - :spelling:ignore:`hostPort.enabled`
-     - Enable hostPort service support.
      - bool
      - ``false``
    * - :spelling:ignore:`hubble.annotations`
