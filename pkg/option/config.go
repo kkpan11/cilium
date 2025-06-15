@@ -81,13 +81,6 @@ const (
 	// the daemon, which can also be disabled using this option.
 	AnnotateK8sNode = "annotate-k8s-node"
 
-	// ARPPingRefreshPeriod is the ARP entries refresher period
-	ARPPingRefreshPeriod = "arping-refresh-period"
-
-	// EnableL2NeighDiscovery determines if cilium should perform L2 neighbor
-	// discovery.
-	EnableL2NeighDiscovery = "enable-l2-neigh-discovery"
-
 	// BPFDistributedLRU enables per-CPU distributed backend memory
 	BPFDistributedLRU = "bpf-distributed-lru"
 
@@ -245,23 +238,9 @@ const (
 	// EnableSVCSourceRangeCheck enables check of service source range checks
 	EnableSVCSourceRangeCheck = "enable-svc-source-range-check"
 
-	// NodePortMode indicates in which mode NodePort implementation should run
-	// ("snat", "dsr" or "hybrid")
-	NodePortMode = "node-port-mode"
-
 	// NodePortAcceleration indicates whether NodePort should be accelerated
 	// via XDP ("none", "generic", "native", or "best-effort")
 	NodePortAcceleration = "node-port-acceleration"
-
-	// Alias to NodePortMode
-	LoadBalancerMode = "bpf-lb-mode"
-
-	// LoadBalancerModeAnnotation tells whether controller should check service
-	// level annotation for configuring bpf loadbalancing method (snat vs dsr).
-	LoadBalancerModeAnnotation = "bpf-lb-mode-annotation"
-
-	// Alias to DSR dispatch method
-	LoadBalancerDSRDispatch = "bpf-lb-dsr-dispatch"
 
 	// Alias to DSR/IPIP IPv4 source CIDR
 	LoadBalancerRSSv4CIDR = "bpf-lb-rss-ipv4-src-cidr"
@@ -350,6 +329,9 @@ const (
 
 	// EnableIPv4EgressGateway enables the IPv4 egress gateway
 	EnableIPv4EgressGateway = "enable-ipv4-egress-gateway"
+
+	// EnableEgressGateway enables the egress gateway
+	EnableEgressGateway = "enable-egress-gateway"
 
 	// EnableEnvoyConfig enables processing of CiliumClusterwideEnvoyConfig and CiliumEnvoyConfig CRDs
 	EnableEnvoyConfig = "enable-envoy-config"
@@ -796,16 +778,12 @@ const (
 	// kvstore consecutive quorum errors before the agent assumes permanent failure
 	KVstoreMaxConsecutiveQuorumErrorsName = "kvstore-max-consecutive-quorum-errors"
 
-	// KVstorePeriodicSync is the time interval in which periodic
-	// synchronization with the kvstore occurs
-	KVstorePeriodicSync = "kvstore-periodic-sync"
-
-	// KVstoreConnectivityTimeout is the timeout when performing kvstore operations
-	KVstoreConnectivityTimeout = "kvstore-connectivity-timeout"
-
 	// IdentityChangeGracePeriod is the name of the
 	// IdentityChangeGracePeriod option
 	IdentityChangeGracePeriod = "identity-change-grace-period"
+
+	// CiliumIdentityMaxJitter is the maximum duration to delay processing a CiliumIdentity under certain conditions (default: 30s).
+	CiliumIdentityMaxJitter = "identity-max-jitter"
 
 	// IdentityRestoreGracePeriod is the name of the
 	// IdentityRestoreGracePeriod option
@@ -833,8 +811,8 @@ const (
 	// EndpointRegenInterval is the interval of the periodic endpoint regeneration loop.
 	EndpointRegenInterval = "endpoint-regen-interval"
 
-	// LoopbackIPv4 is the address to use for service loopback SNAT
-	LoopbackIPv4 = "ipv4-service-loopback-address"
+	// ServiceLoopbackIPv4 is the address to use for service loopback SNAT
+	ServiceLoopbackIPv4 = "ipv4-service-loopback-address"
 
 	// LocalRouterIPv4 is the link-local IPv4 address to use for Cilium router device
 	LocalRouterIPv4 = "local-router-ipv4"
@@ -1035,10 +1013,6 @@ const (
 	// BGP router-id allocation IP pool
 	BGPRouterIDAllocationIPPool = "bgp-router-id-allocation-ip-pool"
 
-	// EnableRuntimeDeviceDetection is the name of the option to enable detection
-	// of new and removed datapath devices during the agent runtime.
-	EnableRuntimeDeviceDetection = "enable-runtime-device-detection"
-
 	// EnablePMTUDiscovery enables path MTU discovery to send ICMP
 	// fragmentation-needed replies to the client (when needed).
 	EnablePMTUDiscovery = "enable-pmtu-discovery"
@@ -1151,24 +1125,6 @@ const (
 )
 
 const (
-	// NodePortModeSNAT is for SNATing requests to remote nodes
-	NodePortModeSNAT = "snat"
-
-	// NodePortModeDSR is for performing DSR for requests to remote nodes
-	NodePortModeDSR = "dsr"
-
-	// NodePortModeHybrid is a dual mode of the above, that is, DSR for TCP and SNAT for UDP
-	NodePortModeHybrid = "hybrid"
-
-	// DSR dispatch mode to encode service into IP option or extension header
-	DSRDispatchOption = "opt"
-
-	// DSR dispatch mode to encapsulate to IPIP
-	DSRDispatchIPIP = "ipip"
-
-	// DSR dispatch mode to encapsulate to Geneve
-	DSRDispatchGeneve = "geneve"
-
 	// NodePortAccelerationDisabled means we do not accelerate NodePort via XDP
 	NodePortAccelerationDisabled = XDPModeDisabled
 
@@ -1303,11 +1259,6 @@ type DaemonConfig struct {
 	HostV6Addr         net.IP   // Host v6 address of the snooping device
 	EncryptInterface   []string // Set of network facing interface to encrypt over
 	EncryptNode        bool     // Set to true for encrypting node IP traffic
-
-	// If set to true the daemon will detect new and deleted datapath devices
-	// at runtime and reconfigure the datapath to load programs onto the new
-	// devices.
-	EnableRuntimeDeviceDetection bool
 
 	DatapathMode string // Datapath mode
 	RoutingMode  string // Routing mode
@@ -1596,8 +1547,6 @@ type DaemonConfig struct {
 	IPv6ServiceRange              string
 	K8sSyncTimeout                time.Duration
 	AllocatorListTimeout          time.Duration
-	KVStore                       string
-	KVStoreOpt                    map[string]string
 	LabelPrefixFile               string
 	Labels                        []string
 	LogDriver                     []string
@@ -1613,19 +1562,19 @@ type DaemonConfig struct {
 	EnableIPMasqAgent           bool
 	IPMasqAgentConfigPath       string
 
-	EnableBPFClockProbe     bool
-	EnableIPv4EgressGateway bool
-	EnableEnvoyConfig       bool
-	InstallIptRules         bool
-	MonitorAggregation      string
-	PreAllocateMaps         bool
-	IPv6NodeAddr            string
-	IPv4NodeAddr            string
-	SocketPath              string
-	TracePayloadlen         int
-	Version                 string
-	PrometheusServeAddr     string
-	ToFQDNsMinTTL           int
+	EnableBPFClockProbe bool
+	EnableEgressGateway bool
+	EnableEnvoyConfig   bool
+	InstallIptRules     bool
+	MonitorAggregation  string
+	PreAllocateMaps     bool
+	IPv6NodeAddr        string
+	IPv4NodeAddr        string
+	SocketPath          string
+	TracePayloadlen     int
+	Version             string
+	PrometheusServeAddr string
+	ToFQDNsMinTTL       int
 
 	// DNSMaxIPsPerRestoredRule defines the maximum number of IPs to maintain
 	// for each FQDN selector in endpoint's restored DNS rules
@@ -1734,26 +1683,15 @@ type DaemonConfig struct {
 	// is marked as healthy.
 	HealthCheckICMPFailureThreshold int
 
-	// KVstoreLeaseTTL is the time-to-live for kvstore lease.
-	KVstoreLeaseTTL time.Duration
-
-	// KVstoreMaxConsecutiveQuorumErrors is the maximum number of acceptable
-	// kvstore consecutive quorum errors before the agent assumes permanent failure
-	KVstoreMaxConsecutiveQuorumErrors uint
-
-	// KVstorePeriodicSync is the time interval in which periodic
-	// synchronization with the kvstore occurs
-	KVstorePeriodicSync time.Duration
-
-	// KVstoreConnectivityTimeout is the timeout when performing kvstore operations
-	KVstoreConnectivityTimeout time.Duration
-
 	// IdentityChangeGracePeriod is the grace period that needs to pass
 	// before an endpoint that has changed its identity will start using
 	// that new identity. During the grace period, the new identity has
 	// already been allocated and other nodes in the cluster have a chance
 	// to whitelist the new upcoming identity of the endpoint.
 	IdentityChangeGracePeriod time.Duration
+
+	// Maximum jitter time for CiliumIdentityAdd commentMore actions
+	CiliumIdentityMaxJitter time.Duration
 
 	// IdentityRestoreGracePeriod is the grace period that needs to pass before CIDR identities
 	// restored during agent restart are released. If any of the restored identities remains
@@ -1778,8 +1716,8 @@ type DaemonConfig struct {
 	// the specified maximum value.
 	ConntrackGCMaxInterval time.Duration
 
-	// LoopbackIPv4 is the address to use for service loopback SNAT
-	LoopbackIPv4 string
+	// ServiceLoopbackIPv4 is the address to use for service loopback SNAT
+	ServiceLoopbackIPv4 string
 
 	// LocalRouterIPv4 is the link-local IPv4 address used for Cilium's router device
 	LocalRouterIPv4 string
@@ -1811,20 +1749,8 @@ type DaemonConfig struct {
 	// NodePortNat46X64 indicates whether NAT46 / NAT64 can be used.
 	NodePortNat46X64 bool
 
-	// NodePortMode indicates in which mode NodePort implementation should run
-	// ("snat", "dsr" or "hybrid")
-	NodePortMode string
-
-	// LoadBalancerModeAnnotation tells whether controller should check service
-	// level annotation for configuring bpf load balancing algorithm.
-	LoadBalancerModeAnnotation bool
-
 	// LoadBalancerIPIPSockMark enables sock-lb logic to force service traffic via IPIP
 	LoadBalancerIPIPSockMark bool
-
-	// LoadBalancerDSRDispatch indicates the method for pushing packets to
-	// backends under DSR ("opt" or "ipip")
-	LoadBalancerDSRDispatch string
 
 	// LoadBalancerRSSv4CIDR defines the outer source IPv4 prefix for DSR/IPIP
 	LoadBalancerRSSv4CIDR string
@@ -2013,9 +1939,6 @@ type DaemonConfig struct {
 	// BGPSecretsNamespace is the Kubernetes namespace to get BGP control plane secrets from.
 	BGPSecretsNamespace string
 
-	// ARPPingRefreshPeriod is the ARP entries refresher period.
-	ARPPingRefreshPeriod time.Duration
-
 	// EnableCiliumEndpointSlice enables the cilium endpoint slicing feature.
 	EnableCiliumEndpointSlice bool
 
@@ -2027,10 +1950,6 @@ type DaemonConfig struct {
 
 	// DisableExternalIPMigration disable externalIP mitigation (CVE-2020-8554)
 	DisableExternalIPMitigation bool
-
-	// EnableL2NeighDiscovery determines if cilium should perform L2 neighbor
-	// discovery.
-	EnableL2NeighDiscovery bool
 
 	// EnableICMPRules enables ICMP-based rule support for Cilium Network Policies.
 	EnableICMPRules bool
@@ -2176,14 +2095,12 @@ var (
 		EnableL7Proxy:                   defaults.EnableL7Proxy,
 		DNSMaxIPsPerRestoredRule:        defaults.DNSMaxIPsPerRestoredRule,
 		ToFQDNsMaxIPsPerHost:            defaults.ToFQDNsMaxIPsPerHost,
-		KVstorePeriodicSync:             defaults.KVstorePeriodicSync,
-		KVstoreConnectivityTimeout:      defaults.KVstoreConnectivityTimeout,
 		IdentityChangeGracePeriod:       defaults.IdentityChangeGracePeriod,
+		CiliumIdentityMaxJitter:         defaults.CiliumIdentityMaxJitter,
 		IdentityRestoreGracePeriod:      defaults.IdentityRestoreGracePeriodK8s,
 		FixedIdentityMapping:            make(map[string]string),
-		KVStoreOpt:                      make(map[string]string),
 		LogOpt:                          make(map[string]string),
-		LoopbackIPv4:                    defaults.LoopbackIPv4,
+		ServiceLoopbackIPv4:             defaults.ServiceLoopbackIPv4,
 		EnableEndpointRoutes:            defaults.EnableEndpointRoutes,
 		AnnotateK8sNode:                 defaults.AnnotateK8sNode,
 		K8sServiceCacheSize:             defaults.K8sServiceCacheSize,
@@ -2473,17 +2390,6 @@ func (c *DaemonConfig) DirectRoutingDeviceRequired() bool {
 	return c.EnableNodePort || BPFHostRoutingEnabled || Config.EnableWireguard
 }
 
-func (c *DaemonConfig) LoadBalancerUsesDSR() bool {
-	return c.NodePortMode == NodePortModeDSR ||
-		c.NodePortMode == NodePortModeHybrid ||
-		c.LoadBalancerModeAnnotation
-}
-
-// KVstoreEnabled returns whether Cilium is configured to connect to an external KVStore.
-func (c *DaemonConfig) KVstoreEnabled() bool {
-	return c.KVStore != ""
-}
-
 func (c *DaemonConfig) validateIPv6ClusterAllocCIDR() error {
 	ip, cidr, err := net.ParseCIDR(c.IPv6ClusterAllocCIDR)
 	if err != nil {
@@ -2590,13 +2496,6 @@ func (c *DaemonConfig) Validate(vp *viper.Viper) error {
 
 	if err := c.checkIPAMDelegatedPlugin(); err != nil {
 		return err
-	}
-
-	// Validate that the KVStore Lease TTL value lies between a particular range.
-	if c.KVstoreLeaseTTL > defaults.KVstoreLeaseMaxTTL || c.KVstoreLeaseTTL < defaults.LockLeaseTTL {
-		return fmt.Errorf("KVstoreLeaseTTL does not lie in required range(%ds, %ds)",
-			int64(defaults.LockLeaseTTL.Seconds()),
-			int64(defaults.KVstoreLeaseMaxTTL.Seconds()))
 	}
 
 	if c.EnableVTEP {
@@ -2722,12 +2621,14 @@ func (c *DaemonConfig) SetupLogging(vp *viper.Viper, tag string) {
 	c.LogDriver = vp.GetStringSlice(LogDriver)
 
 	if m, err := command.GetStringMapStringE(vp, LogOpt); err != nil {
+		// slogloggercheck: log fatal errors using the default logger before it's initialized.
 		logging.Fatal(logging.DefaultSlogLogger, fmt.Sprintf("unable to parse %s", LogOpt), logfields.Error, err)
 	} else {
 		c.LogOpt = m
 	}
 
 	if err := logging.SetupLogging(c.LogDriver, c.LogOpt, tag, c.Debug); err != nil {
+		// slogloggercheck: log fatal errors using the default logger before it's initialized.
 		logging.Fatal(logging.DefaultSlogLogger, "Unable to set up logging", logfields.Error, err)
 	}
 }
@@ -2745,8 +2646,6 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.AllowICMPFragNeeded = vp.GetBool(AllowICMPFragNeeded)
 	c.AllowLocalhost = vp.GetString(AllowLocalhost)
 	c.AnnotateK8sNode = vp.GetBool(AnnotateK8sNode)
-	c.ARPPingRefreshPeriod = vp.GetDuration(ARPPingRefreshPeriod)
-	c.EnableL2NeighDiscovery = vp.GetBool(EnableL2NeighDiscovery)
 	c.AutoCreateCiliumNodeResource = vp.GetBool(AutoCreateCiliumNodeResource)
 	c.BPFRoot = vp.GetString(BPFRoot)
 	c.CGroupRoot = vp.GetString(CGroupRoot)
@@ -2810,6 +2709,7 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.EncryptInterface = vp.GetStringSlice(EncryptInterface)
 	c.EncryptNode = vp.GetBool(EncryptNode)
 	c.IdentityChangeGracePeriod = vp.GetDuration(IdentityChangeGracePeriod)
+	c.CiliumIdentityMaxJitter = vp.GetDuration(CiliumIdentityMaxJitter)
 	c.IdentityRestoreGracePeriod = vp.GetDuration(IdentityRestoreGracePeriod)
 	c.IPAM = vp.GetString(IPAM)
 	c.IPAMDefaultIPPool = vp.GetString(IPAMDefaultIPPool)
@@ -2826,21 +2726,16 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.K8sSyncTimeout = vp.GetDuration(K8sSyncTimeoutName)
 	c.AllocatorListTimeout = vp.GetDuration(AllocatorListTimeoutName)
 	c.KeepConfig = vp.GetBool(KeepConfig)
-	c.KVStore = vp.GetString(KVStore)
-	c.KVstoreLeaseTTL = vp.GetDuration(KVstoreLeaseTTL)
-	c.KVstorePeriodicSync = vp.GetDuration(KVstorePeriodicSync)
-	c.KVstoreConnectivityTimeout = vp.GetDuration(KVstoreConnectivityTimeout)
-	c.KVstoreMaxConsecutiveQuorumErrors = vp.GetUint(KVstoreMaxConsecutiveQuorumErrorsName)
 	c.LabelPrefixFile = vp.GetString(LabelPrefixFile)
 	c.Labels = vp.GetStringSlice(Labels)
 	c.LibDir = vp.GetString(LibDir)
 	c.LogSystemLoadConfig = vp.GetBool(LogSystemLoadConfigName)
-	c.LoopbackIPv4 = vp.GetString(LoopbackIPv4)
+	c.ServiceLoopbackIPv4 = vp.GetString(ServiceLoopbackIPv4)
 	c.LocalRouterIPv4 = vp.GetString(LocalRouterIPv4)
 	c.LocalRouterIPv6 = vp.GetString(LocalRouterIPv6)
 	c.EnableBPFClockProbe = vp.GetBool(EnableBPFClockProbe)
 	c.EnableIPMasqAgent = vp.GetBool(EnableIPMasqAgent)
-	c.EnableIPv4EgressGateway = vp.GetBool(EnableIPv4EgressGateway)
+	c.EnableEgressGateway = vp.GetBool(EnableEgressGateway) || vp.GetBool(EnableIPv4EgressGateway)
 	c.EnableEnvoyConfig = vp.GetBool(EnableEnvoyConfig)
 	c.IPMasqAgentConfigPath = vp.GetString(IPMasqAgentConfigPath)
 	c.AgentHealthRequireK8sConnectivity = vp.GetBool(AgentHealthRequireK8sConnectivity)
@@ -2874,7 +2769,6 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.EnableIPv4FragmentsTracking = vp.GetBool(EnableIPv4FragmentsTrackingName)
 	c.EnableIPv6FragmentsTracking = vp.GetBool(EnableIPv6FragmentsTrackingName)
 	c.FragmentsMapEntries = vp.GetInt(FragmentsMapEntriesName)
-	c.LoadBalancerDSRDispatch = vp.GetString(LoadBalancerDSRDispatch)
 	c.LoadBalancerRSSv4CIDR = vp.GetString(LoadBalancerRSSv4CIDR)
 	c.LoadBalancerRSSv6CIDR = vp.GetString(LoadBalancerRSSv6CIDR)
 	c.LoadBalancerIPIPSockMark = vp.GetBool(LoadBalancerIPIPSockMark)
@@ -2908,7 +2802,6 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	}
 
 	c.populateLoadBalancerSettings(logger, vp)
-	c.EnableRuntimeDeviceDetection = vp.GetBool(EnableRuntimeDeviceDetection)
 	c.EgressMultiHomeIPRuleCompat = vp.GetBool(EgressMultiHomeIPRuleCompat)
 	c.InstallUplinkRoutesForDelegatedIPAM = vp.GetBool(InstallUplinkRoutesForDelegatedIPAM)
 
@@ -3095,12 +2988,6 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	c.ConntrackGCInterval = vp.GetDuration(ConntrackGCInterval)
 	c.ConntrackGCMaxInterval = vp.GetDuration(ConntrackGCMaxInterval)
 
-	if m, err := command.GetStringMapStringE(vp, KVStoreOpt); err != nil {
-		logging.Fatal(logger, fmt.Sprintf("unable to parse %s: %s", KVStoreOpt, err))
-	} else {
-		c.KVStoreOpt = m
-	}
-
 	bpfEventsDefaultRateLimit := vp.GetUint32(BPFEventsDefaultRateLimit)
 	bpfEventsDefaultBurstLimit := vp.GetUint32(BPFEventsDefaultBurstLimit)
 	switch {
@@ -3158,13 +3045,15 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 	default:
 		logging.Fatal(logger, fmt.Sprintf("Invalid identity allocation mode %q. It must be one of %s, %s or %s / %s", c.IdentityAllocationMode, IdentityAllocationModeKVstore, IdentityAllocationModeCRD, IdentityAllocationModeDoubleWriteReadKVstore, IdentityAllocationModeDoubleWriteReadCRD))
 	}
-	if c.KVStore == "" {
+
+	theKVStore := vp.GetString(KVStore)
+	if theKVStore == "" {
 		if c.IdentityAllocationMode != IdentityAllocationModeCRD {
-			logger.Warn(fmt.Sprintf("Running Cilium with %q=%q requires identity allocation via CRDs. Changing %s to %q", KVStore, c.KVStore, IdentityAllocationMode, IdentityAllocationModeCRD))
+			logger.Warn(fmt.Sprintf("Running Cilium with %q=%q requires identity allocation via CRDs. Changing %s to %q", KVStore, theKVStore, IdentityAllocationMode, IdentityAllocationModeCRD))
 			c.IdentityAllocationMode = IdentityAllocationModeCRD
 		}
 		if c.DisableCiliumEndpointCRD && NetworkPolicyEnabled(c) {
-			logger.Warn(fmt.Sprintf("Running Cilium with %q=%q requires endpoint CRDs when network policy enforcement system is enabled. Changing %s to %t", KVStore, c.KVStore, DisableCiliumEndpointCRDName, false))
+			logger.Warn(fmt.Sprintf("Running Cilium with %q=%q requires endpoint CRDs when network policy enforcement system is enabled. Changing %s to %t", KVStore, theKVStore, DisableCiliumEndpointCRDName, false))
 			c.DisableCiliumEndpointCRD = false
 		}
 	}
@@ -3228,7 +3117,7 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 		c.ExcludeNodeLabelPatterns = append(c.ExcludeNodeLabelPatterns, r)
 	}
 
-	if c.KVStore != "" {
+	if theKVStore != "" {
 		c.IdentityRestoreGracePeriod = defaults.IdentityRestoreGracePeriodKvstore
 	}
 
@@ -3251,8 +3140,6 @@ func (c *DaemonConfig) Populate(logger *slog.Logger, vp *viper.Viper) {
 
 func (c *DaemonConfig) populateLoadBalancerSettings(logger *slog.Logger, vp *viper.Viper) {
 	c.NodePortAcceleration = vp.GetString(LoadBalancerAcceleration)
-	c.NodePortMode = vp.GetString(LoadBalancerMode)
-	c.LoadBalancerModeAnnotation = vp.GetBool(LoadBalancerModeAnnotation)
 	// If old settings were explicitly set by the user, then have them
 	// override the new ones in order to not break existing setups.
 	if vp.IsSet(NodePortAcceleration) {
@@ -3261,14 +3148,6 @@ func (c *DaemonConfig) populateLoadBalancerSettings(logger *slog.Logger, vp *vip
 		if vp.IsSet(LoadBalancerAcceleration) && prior != c.NodePortAcceleration {
 			logging.Fatal(logger, fmt.Sprintf("Both --%s and --%s were set. Only use --%s instead.",
 				LoadBalancerAcceleration, NodePortAcceleration, LoadBalancerAcceleration))
-		}
-	}
-	if vp.IsSet(NodePortMode) {
-		prior := c.NodePortMode
-		c.NodePortMode = vp.GetString(NodePortMode)
-		if vp.IsSet(LoadBalancerMode) && prior != c.NodePortMode {
-			logging.Fatal(logger, fmt.Sprintf("Both --%s and --%s were set. Only use --%s instead.",
-				LoadBalancerMode, NodePortMode, LoadBalancerMode))
 		}
 	}
 }
@@ -3615,16 +3494,6 @@ func (c *DaemonConfig) validateVTEP(vp *viper.Viper) error {
 	return nil
 }
 
-// KubeProxyReplacementFullyEnabled returns true if Cilium is _effectively_
-// running in full KPR mode.
-func (c *DaemonConfig) KubeProxyReplacementFullyEnabled() bool {
-	return c.EnableHostPort &&
-		c.EnableNodePort &&
-		c.EnableExternalIPs &&
-		c.EnableSocketLB &&
-		c.EnableSessionAffinity
-}
-
 var backupFileNames []string = []string{
 	"agent-runtime-config.json",
 	"agent-runtime-config-1.json",
@@ -3910,7 +3779,7 @@ func InitConfig(logger *slog.Logger, cmd *cobra.Command, programName, configName
 
 		// Check for the debug flag again now that the configuration file may has
 		// been loaded, as it might have changed.
-		if vp.GetBool("debug") {
+		if vp.GetBool(DebugArg) {
 			logging.SetLogLevelToDebug()
 		}
 	}
@@ -3937,14 +3806,14 @@ func (cs BPFEventBufferConfigs) get(name string) BPFEventBufferConfig {
 }
 
 // ParseEventBufferTupleString parses a event buffer configuration tuple string.
-// For example: true,100,24h
+// For example: enabled_100_24h
 // Which refers to enabled=true, maxSize=100, ttl=24hours.
 func ParseEventBufferTupleString(optsStr string) (BPFEventBufferConfig, error) {
-	opts := strings.Split(optsStr, ",")
+	opts := strings.Split(optsStr, "_")
 	enabled := false
 	conf := BPFEventBufferConfig{}
 	if len(opts) != 3 {
-		return conf, fmt.Errorf("unexpected event buffer config value format, should be in format 'mapname=enabled,100,24h'")
+		return conf, fmt.Errorf("unexpected event buffer config value format, should be in format 'mapname=enabled_100_24h'")
 	}
 
 	if opts[0] != "enabled" && opts[0] != "disabled" {

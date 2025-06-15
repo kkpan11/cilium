@@ -14,8 +14,9 @@ import (
 	daemonk8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/datapath/tables"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/k8s/client"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/maglev"
+	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/source"
@@ -26,11 +27,12 @@ import (
 func TestCell(t *testing.T) {
 
 	h := hive.New(
-		client.FakeClientCell,
+		k8sClient.FakeClientCell(),
 		daemonk8s.ResourcesCell,
 		daemonk8s.TablesCell,
 		maglev.Cell,
 		node.LocalNodeStoreCell,
+		metrics.Cell,
 		Cell,
 		cell.Provide(source.NewSources),
 		cell.Provide(

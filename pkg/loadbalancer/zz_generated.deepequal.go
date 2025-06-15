@@ -93,9 +93,6 @@ func (in *UserConfig) DeepEqual(other *UserConfig) bool {
 		return false
 	}
 
-	if in.EnableExperimentalLB != other.EnableExperimentalLB {
-		return false
-	}
 	if in.RetryBackoffMin != other.RetryBackoffMin {
 		return false
 	}
@@ -146,7 +143,16 @@ func (in *UserConfig) DeepEqual(other *UserConfig) bool {
 		}
 	}
 
+	if in.LBMode != other.LBMode {
+		return false
+	}
+	if in.LBModeAnnotation != other.LBModeAnnotation {
+		return false
+	}
 	if in.LBAlgorithm != other.LBAlgorithm {
+		return false
+	}
+	if in.DSRDispatch != other.DSRDispatch {
 		return false
 	}
 	if in.ExternalClusterIP != other.ExternalClusterIP {
@@ -156,6 +162,12 @@ func (in *UserConfig) DeepEqual(other *UserConfig) bool {
 		return false
 	}
 	if in.EnableHealthCheckNodePort != other.EnableHealthCheckNodePort {
+		return false
+	}
+	if in.LBPressureMetricsInterval != other.LBPressureMetricsInterval {
+		return false
+	}
+	if in.EnableServiceTopology != other.EnableServiceTopology {
 		return false
 	}
 

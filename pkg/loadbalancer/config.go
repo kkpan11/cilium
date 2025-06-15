@@ -56,6 +56,21 @@ const (
 	// Deprecated option for setting [LBAlgorithm]
 	NodePortAlgName = "node-port-algorithm"
 
+	// LoadBalancerMode indicates in which mode NodePort implementation should run
+	// ("snat", "dsr" or "hybrid")
+	LoadBalancerModeName = "bpf-lb-mode"
+
+	// LoadBalancerModeAnnotation tells whether controller should check service
+	// level annotation for configuring bpf loadbalancing method (snat vs dsr).
+	LoadBalancerModeAnnotationName = "bpf-lb-mode-annotation"
+
+	// Deprecated option for setting [LoadBalancerMode]
+	NodePortModeName = "node-port-mode"
+
+	// LoadBalancerDSRDispatchName is the config option for setting the method for
+	// pushing packets to backends under DSR ("opt" or "ipip")
+	LoadBalancerDSRDispatchName = "bpf-lb-dsr-dispatch"
+
 	// ExternalClusterIPName is the name of the option to enable
 	// cluster external access to ClusterIP services.
 	ExternalClusterIPName = "bpf-lb-external-clusterip"
@@ -66,6 +81,9 @@ const (
 
 	// EnableHealthCheckNodePort is the name of the EnableHealthCheckNodePort option
 	EnableHealthCheckNodePortName = "enable-health-check-nodeport"
+
+	// EnableServiceTopologyName is the flag name of for the EnableServiceTopology option
+	EnableServiceTopologyName = "enable-service-topology"
 )
 
 // Configuration option defaults
@@ -86,14 +104,31 @@ const (
 
 	// LBAlgorithmMaglev is for using maglev consistent hashing for backend selection
 	LBAlgorithmMaglev = "maglev"
+
+	// LBModeSNAT is for SNATing requests to remote nodes
+	LBModeSNAT = "snat"
+
+	// LBModeDSR is for performing DSR for requests to remote nodes
+	LBModeDSR = "dsr"
+
+	// LBModeHybrid is a dual mode of the above, that is, DSR for TCP and SNAT for UDP
+	LBModeHybrid = "hybrid"
+
+	// DSR dispatch mode to encode service into IP option or extension header
+	DSRDispatchOption = "opt"
+
+	// DSR dispatch mode to encapsulate to IPIP
+	DSRDispatchIPIP = "ipip"
+
+	// DSR dispatch mode to encapsulate to Geneve
+	DSRDispatchGeneve = "geneve"
 )
 
 // UserConfig is the configuration provided by the user that has not been processed.
 // +deepequal-gen=true
 type UserConfig struct {
-	EnableExperimentalLB bool          `mapstructure:"enable-experimental-lb"`
-	RetryBackoffMin      time.Duration `mapstructure:"lb-retry-backoff-min"`
-	RetryBackoffMax      time.Duration `mapstructure:"lb-retry-backoff-max"`
+	RetryBackoffMin time.Duration `mapstructure:"lb-retry-backoff-min"`
+	RetryBackoffMax time.Duration `mapstructure:"lb-retry-backoff-max"`
 
 	// LBMapEntries is the maximum number of entries allowed in BPF lbmap.
 	LBMapEntries int `mapstructure:"bpf-lb-map-max"`
@@ -127,9 +162,21 @@ type UserConfig struct {
 	// NodePortRange is the minimum and maximum ports to use for NodePort
 	NodePortRange []string
 
+	// LBMode indicates in which mode NodePort implementation should run
+	// ("snat", "dsr" or "hybrid")
+	LBMode string `mapstructure:"bpf-lb-mode"`
+
+	// LBModeAnnotation tells whether controller should check service
+	// level annotation for configuring bpf load balancing algorithm.
+	LBModeAnnotation bool `mapstructure:"bpf-lb-mode-annotation"`
+
 	// LoadBalancerAlgorithm indicates which backend selection algorithm is used
 	// ("random" or "maglev")
 	LBAlgorithm string `mapstructure:"bpf-lb-algorithm"`
+
+	// DSRDispatch indicates the method for pushing packets to
+	// backends under DSR ("opt" or "ipip")
+	DSRDispatch string `mapstructure:"bpf-lb-dsr-dispatch"`
 
 	// ExternalClusterIP enables routing to ClusterIP services from outside
 	// the cluster. This mirrors the behaviour of kube-proxy.
@@ -142,6 +189,14 @@ type UserConfig struct {
 	// EnableHealthCheckNodePort enables health checking of NodePort by
 	// cilium
 	EnableHealthCheckNodePort bool `mapstructure:"enable-health-check-nodeport"`
+
+	// LBPressureMetricsInterval sets the interval for updating the load-balancer BPF map
+	// pressure metrics. A batch lookup is performed for all maps periodically to count
+	// the number of elements that are then reported in the `bpf-map-pressure` metric.
+	LBPressureMetricsInterval time.Duration `mapstructure:"lb-pressure-metrics-interval"`
+
+	// Enable processing of service topology aware hints
+	EnableServiceTopology bool
 }
 
 // ConfigCell provides the [Config] and [ExternalConfig] configurations.
@@ -170,10 +225,20 @@ type Config struct {
 	NodePortMax uint16
 }
 
+func (c *Config) LoadBalancerUsesDSR() bool {
+	return c.LBMode == LBModeDSR ||
+		c.LBMode == LBModeHybrid ||
+		c.LBModeAnnotation
+}
+
 type DeprecatedConfig struct {
 	// NodePortAlg indicates which backend selection algorithm is used
 	// ("random" or "maglev")
 	NodePortAlg string `mapstructure:"node-port-algorithm"`
+
+	// NodePortMode indicates in which mode NodePort implementation should run
+	// ("snat", "dsr" or "hybrid")
+	NodePortMode string `mapstructure:"node-port-mode"`
 }
 
 func (DeprecatedConfig) Flags(flags *pflag.FlagSet) {
@@ -181,12 +246,14 @@ func (DeprecatedConfig) Flags(flags *pflag.FlagSet) {
 	flags.String(NodePortAlgName, "", "BPF load balancing algorithm (\"random\", \"maglev\")")
 	flags.MarkHidden(NodePortAlgName)
 	flags.MarkDeprecated(NodePortAlgName, "Use --"+LBAlgorithmName+" instead")
+
+	// Deprecated option for setting [LBMode]
+	flags.String(NodePortModeName, "", "BPF NodePort mode (\"snat\", \"dsr\", \"hybrid\")")
+	flags.MarkHidden(NodePortModeName)
+	flags.MarkDeprecated(NodePortAlgName, "Use --"+LoadBalancerModeName+" instead")
 }
 
 func (def UserConfig) Flags(flags *pflag.FlagSet) {
-	flags.Bool("enable-experimental-lb", def.EnableExperimentalLB, "Enable experimental load-balancing control-plane")
-	flags.MarkHidden("enable-experimental-lb")
-
 	flags.Duration("lb-retry-backoff-min", def.RetryBackoffMin, "Minimum amount of time to wait before retrying LB operation")
 	flags.MarkHidden("lb-retry-backoff-min")
 
@@ -221,11 +288,22 @@ func (def UserConfig) Flags(flags *pflag.FlagSet) {
 
 	flags.String(LBAlgorithmName, def.LBAlgorithm, "BPF load balancing algorithm (\"random\", \"maglev\")")
 
+	flags.Bool(LoadBalancerModeAnnotationName, false, "Enable service-level annotation for configuring BPF load balancing mode")
+
+	flags.String(LoadBalancerModeName, def.LBMode, "BPF load balancing mode (\"snat\", \"dsr\", \"hybrid\")")
+
+	flags.String(LoadBalancerDSRDispatchName, def.DSRDispatch, "BPF load balancing DSR dispatch method (\"opt\", \"ipip\", \"geneve\")")
+
 	flags.Bool(ExternalClusterIPName, def.ExternalClusterIP, "Enable external access to ClusterIP services (default false)")
 
 	flags.Bool(AlgorithmAnnotationName, def.AlgorithmAnnotation, "Enable service-level annotation for configuring BPF load balancing algorithm")
 
 	flags.Bool(EnableHealthCheckNodePortName, def.EnableHealthCheckNodePort, "Enables a healthcheck nodePort server for NodePort services with 'healthCheckNodePort' being set")
+
+	flags.Duration("lb-pressure-metrics-interval", def.LBPressureMetricsInterval, "Interval for reporting pressure metrics for load-balancing BPF maps. 0 disables reporting.")
+	flags.MarkHidden("lb-pressure-metrics-interval")
+
+	flags.Bool(EnableServiceTopologyName, def.EnableServiceTopology, "Enable support for service topology aware hints")
 }
 
 // NewConfig takes the user-provided configuration, validates and processes it to produce the final
@@ -322,14 +400,51 @@ func NewConfig(log *slog.Logger, userConfig UserConfig, deprecatedConfig Depreca
 		return Config{}, fmt.Errorf("Invalid value for --%s: %s", LBAlgorithmName, cfg.LBAlgorithm)
 	}
 
+	if deprecatedConfig.NodePortMode != "" {
+		if cfg.LBMode != DefaultUserConfig.LBMode {
+			return Config{}, fmt.Errorf("both --%s and --%s were set. Use --%s instead.",
+				LoadBalancerModeName, NodePortModeName, LoadBalancerModeName)
+		}
+		cfg.LBMode = deprecatedConfig.NodePortMode
+	}
+
+	if cfg.LBMode != LBModeSNAT && cfg.LBMode != LBModeDSR && cfg.LBMode != LBModeHybrid {
+		return Config{}, fmt.Errorf("Invalid value for --%s: %s", LoadBalancerModeName, cfg.LBMode)
+	}
+
+	if cfg.LBModeAnnotation &&
+		cfg.LBMode == LBModeHybrid {
+		return Config{}, fmt.Errorf("The value --%s=%s is not supported as default under annotation mode", LoadBalancerModeName, cfg.LBMode)
+	}
+
+	/* FIXME:
+
+	if cfg.NodePortMode == option.NodePortModeDSR &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchOption &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchIPIP &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchGeneve {
+		return fmt.Errorf("Invalid value for --%s: %s", option.LoadBalancerDSRDispatch, cfg.LoadBalancerDSRDispatch)
+	}
+
+	if cfg.NodePortMode == option.NodePortModeHybrid &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchOption &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchGeneve {
+		return fmt.Errorf("Invalid value for --%s: %s", option.LoadBalancerDSRDispatch, cfg.LoadBalancerDSRDispatch)
+	}
+
+	if cfg.LoadBalancerModeAnnotation &&
+		cfg.LoadBalancerDSRDispatch != option.DSRDispatchIPIP {
+		return fmt.Errorf("Invalid value for --%s: %s", option.LoadBalancerDSRDispatch, cfg.LoadBalancerDSRDispatch)
+	}*/
+
 	return
 }
 
 var DefaultUserConfig = UserConfig{
-	EnableExperimentalLB: true,
-	RetryBackoffMin:      50 * time.Millisecond,
-	RetryBackoffMax:      time.Minute,
-	LBMapEntries:         DefaultLBMapMaxEntries,
+	RetryBackoffMin:           50 * time.Millisecond,
+	RetryBackoffMax:           time.Minute,
+	LBMapEntries:              DefaultLBMapMaxEntries,
+	LBPressureMetricsInterval: 5 * time.Minute,
 
 	LBServiceMapEntries:     0, // Uses [LBMapEntries] if zero
 	LBBackendMapEntries:     0, // ...
@@ -345,6 +460,10 @@ var DefaultUserConfig = UserConfig{
 	NodePortRange: []string{},
 	LBAlgorithm:   LBAlgorithmRandom,
 
+	LBMode: LBModeSNAT,
+
+	DSRDispatch: DSRDispatchOption,
+
 	// Defaults to false to retain prior behaviour to not route external packets
 	// to ClusterIP services.
 	ExternalClusterIP: false,
@@ -352,6 +471,8 @@ var DefaultUserConfig = UserConfig{
 	AlgorithmAnnotation: false,
 
 	EnableHealthCheckNodePort: true,
+
+	EnableServiceTopology: false,
 }
 
 var DefaultConfig = Config{
@@ -366,7 +487,7 @@ type TestConfig struct {
 }
 
 func (def TestConfig) Flags(flags *pflag.FlagSet) {
-	flags.Float32("lb-test-fault-probability", def.TestFaultProbability, "Probability for fault injection in LBMaps")
+	flags.Float32("lb-test-fault-probability", def.TestFaultProbability, "Probability for fault injection in LBMaps (0..1)")
 }
 
 // ExternalConfig are configuration options derived from external sources such as

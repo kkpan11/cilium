@@ -21,12 +21,12 @@ import (
 	"github.com/cilium/hive/hivetest"
 	"github.com/cilium/hive/script"
 	"github.com/cilium/hive/script/scripttest"
-	envoy_config_cluster "github.com/cilium/proxy/go/envoy/config/cluster/v3"
-	envoy_config_endpoint "github.com/cilium/proxy/go/envoy/config/endpoint/v3"
-	envoy_config_listener "github.com/cilium/proxy/go/envoy/config/listener/v3"
-	envoy_config_route "github.com/cilium/proxy/go/envoy/config/route/v3"
-	envoy_config_tls "github.com/cilium/proxy/go/envoy/extensions/transport_sockets/tls/v3"
 	"github.com/cilium/statedb"
+	envoy_config_cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	envoy_config_endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
+	envoy_config_listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	envoy_config_route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	envoy_config_tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
@@ -37,9 +37,10 @@ import (
 
 	daemonk8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/datapath/tables"
+	"github.com/cilium/cilium/pkg/endpoint/regeneration"
 	"github.com/cilium/cilium/pkg/envoy"
 	"github.com/cilium/cilium/pkg/hive"
-	"github.com/cilium/cilium/pkg/k8s/client"
+	k8sClient "github.com/cilium/cilium/pkg/k8s/client/testutils"
 	"github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/testutils"
 	"github.com/cilium/cilium/pkg/k8s/version"
@@ -48,6 +49,7 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/maglev"
+	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/promise"
@@ -69,9 +71,11 @@ func TestScript(t *testing.T) {
 		var lns *node.LocalNodeStore
 
 		h := hive.New(
-			client.FakeClientCell,
+			k8sClient.FakeClientCell(),
+			synced.Cell,
 			daemonk8s.ResourcesCell,
 			daemonk8s.TablesCell,
+			metrics.Cell,
 			maglev.Cell,
 			cell.Config(CECConfig{}),
 			cell.Config(envoy.ProxyConfig{}),
@@ -82,6 +86,7 @@ func TestScript(t *testing.T) {
 				tables.NewNodeAddressTable,
 				statedb.RWTable[tables.NodeAddress].ToTable,
 				source.NewSources,
+				regeneration.NewFence,
 				func() *option.DaemonConfig {
 					return &option.DaemonConfig{
 						EnableIPv4:           true,
@@ -98,37 +103,48 @@ func TestScript(t *testing.T) {
 			),
 			cell.Invoke(statedb.RegisterTable[tables.NodeAddress]),
 
-			cell.Module("cec-test", "test",
-				// cecResourceParser and its friends.
-				cell.Group(
-					cell.Provide(
-						newCECResourceParser,
-						func(log *slog.Logger) PortAllocator { return staticPortAllocator{log} },
-						func() FeatureMetrics {
-							return mockFeatureMetrics{}
-						},
-					),
-					node.LocalNodeStoreCell,
-					cell.Invoke(func(lns_ *node.LocalNodeStore) { lns = lns_ }),
-				),
-				tableCells,
-				controllerCells,
-
-				cell.ProvidePrivate(
-					func() promise.Promise[synced.CRDSync] {
-						r, p := promise.New[synced.CRDSync]()
-						r.Resolve(synced.CRDSync{})
-						return p
+			// cecResourceParser and its friends.
+			cell.Group(
+				cell.Provide(
+					newCECResourceParser,
+					func(log *slog.Logger) PortAllocator { return staticPortAllocator{log} },
+					func() FeatureMetrics {
+						return mockFeatureMetrics{}
 					},
-					func() resourceMutator { return fakeEnvoy },
-					func() policyTrigger { return fakeEnvoy },
 				),
+				node.LocalNodeStoreCell,
+				cell.Invoke(func(lns_ *node.LocalNodeStore) { lns = lns_ }),
 			),
+			tableCells,
+			controllerCells,
+
+			cell.ProvidePrivate(
+				func() promise.Promise[synced.CRDSync] {
+					r, p := promise.New[synced.CRDSync]()
+					r.Resolve(synced.CRDSync{})
+					return p
+				},
+				func() resourceMutator { return fakeEnvoy },
+				func() policyTrigger { return fakeEnvoy },
+			),
+
+			// Add an assertion on stop to validate that the CEC resources have been
+			// marked synced after each test.
+			cell.Invoke(func(lc cell.Lifecycle, res *synced.Resources) {
+				lc.Append(cell.Hook{
+					OnStop: func(ctx cell.HookContext) error {
+						return res.WaitForCacheSyncWithTimeout(
+							ctx, time.Second,
+							k8sAPIGroupCiliumClusterwideEnvoyConfigV2,
+							k8sAPIGroupCiliumEnvoyConfigV2,
+						)
+					},
+				})
+			}),
 		)
 
 		flags := pflag.NewFlagSet("", pflag.ContinueOnError)
 		h.RegisterFlags(flags)
-		flags.Set("enable-experimental-lb", "true")
 
 		var opts []hivetest.LogOption
 		if *debug {
@@ -483,7 +499,7 @@ type staticPortAllocator struct {
 }
 
 // AckProxyPort implements PortAllocator.
-func (s staticPortAllocator) AckProxyPort(ctx context.Context, name string) error {
+func (s staticPortAllocator) AckProxyPortWithReference(ctx context.Context, name string) error {
 	s.log.Info("AckProxyPort", logfields.Listener, name)
 	return nil
 }

@@ -1058,7 +1058,6 @@ func TestBPFOps(t *testing.T) {
 	}
 
 	cfg, _ := loadbalancer.NewConfig(log, loadbalancer.DefaultUserConfig, loadbalancer.DeprecatedConfig{}, &option.DaemonConfig{})
-	cfg.EnableExperimentalLB = true
 
 	var lbmaps maps.LBMaps
 	if testutils.IsPrivileged() {
@@ -1112,6 +1111,7 @@ func TestBPFOps(t *testing.T) {
 					err := ops.Update(
 						context.TODO(),
 						db.ReadTxn(),
+						0,
 						&frontend,
 					)
 					require.NoError(t, err, "Update")
@@ -1119,6 +1119,7 @@ func TestBPFOps(t *testing.T) {
 					err := ops.Delete(
 						context.TODO(),
 						nil, // ReadTxn (unused)
+						0,
 						&frontend,
 					)
 					require.NoError(t, err, "Delete")
